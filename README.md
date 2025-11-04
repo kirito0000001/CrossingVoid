@@ -8,6 +8,7 @@ _旧版本将不支持登录_
 
 游戏官网：http://www.crossingvoid.top/
 
+下载安装教程：https://www.bilibili.com/video/BV1jSJQzzEjZ/
 安卓注意事项
 重要：【X86CPU架构，模拟器不适配，请自行了解和测试后酌情下载】
 
