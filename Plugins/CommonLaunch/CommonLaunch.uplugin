@@ -1,0 +1,23 @@
+﻿{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "CommonLaunch",
+	"Description": "Launch App",
+	"Category": "Other",
+	"CreatedBy": "DreamMoon",
+	"CreatedByURL": "https://dmstudio.top",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"CanContainContent": true,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "CommonLaunch",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}

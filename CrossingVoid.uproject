@@ -1,0 +1,98 @@
+{
+	"FileVersion": 3,
+	"EngineAssociation": "{A51BB32C-4009-5D83-333C-93B1CA87B609}",
+	"Category": "",
+	"Description": "",
+	"Modules": [
+		{
+			"Name": "CrossingVoid",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"AdditionalDependencies": [
+				"Paper2D",
+				"Engine"
+			]
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "ModelingToolsEditorMode",
+			"Enabled": true,
+			"TargetAllowList": [
+				"Editor"
+			]
+		},
+		{
+			"Name": "OpenImageDenoise",
+			"Enabled": false
+		},
+		{
+			"Name": "PostProcessWidget",
+			"Enabled": true,
+			"MarketplaceURL": "com.epicgames.launcher://ue/marketplace/product/681964e1c10b466a9b803073e582f48a"
+		},
+		{
+			"Name": "AkPing",
+			"Enabled": false,
+			"PlatformDenyList": [
+				"Android"
+			]
+		},
+		{
+			"Name": "PaperZD",
+			"Enabled": true,
+			"MarketplaceURL": "com.epicgames.launcher://ue/marketplace/content/c4b43502026047d89296cd7bffd92828"
+		},
+		{
+			"Name": "MongoDBDriver",
+			"Enabled": true,
+			"MarketplaceURL": "com.epicgames.launcher://ue/marketplace/product/f43012495aac4e18b8630ec6fa949d02"
+		},
+		{
+			"Name": "JsonBlueprintUtilities",
+			"Enabled": true
+		},
+		{
+			"Name": "Bridge",
+			"Enabled": false
+		},
+		{
+			"Name": "Fab",
+			"Enabled": false
+		},
+		{
+			"Name": "GitSourceControl",
+			"Enabled": false
+		},
+		{
+			"Name": "GLTFExporter",
+			"Enabled": false
+		},
+		{
+			"Name": "LevelBookmarks",
+			"Enabled": false,
+			"MarketplaceURL": "com.epicgames.launcher://ue/marketplace/product/b4a88d66c795480fb803a0f4f8b1907e"
+		},
+		{
+			"Name": "ChunkDownloader",
+			"Enabled": false
+		},
+		{
+			"Name": "DreamChunkDownloader",
+			"Enabled": false
+		},
+		{
+			"Name": "CommonLoadingScreen",
+			"Enabled": false
+		},
+		{
+			"Name": "AutoSizeComments",
+			"Enabled": true,
+			"MarketplaceURL": "com.epicgames.launcher://ue/marketplace/content/ae89a2c4ab384de0a3f213b23de324f3"
+		}
+	],
+	"TargetPlatforms": [
+		"Windows",
+		"Android"
+	]
+}

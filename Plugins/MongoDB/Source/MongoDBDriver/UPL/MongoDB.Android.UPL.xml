@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 
+
+	Copyright Pandores Marketplace 2025. All Rights Reserved. 
+
+-->
+<root xmlns:android="http://schemas.android.com/apk/res/android">
+
+	<init>
+		<log text=""/>
+		<log text="MongoDB Driver plugin init."/>
+		<log text=""/>
+	</init>
+	
+	<resourceCopies>
+		<isArch arch="arm64-v8a">
+			<log text="Copying MongoDB C++ Driver libraries for arm64-v8a to APK."/>
+			<copyFile src="$S(PluginDir)/../../ThirdParty/mongocxx/android-arm64/libs/libmongocxx-arm64.so"  
+					  dst="$S(BuildDir)/libs/arm64-v8a/libmongocxx.so" />
+		</isArch>
+
+		<isArch arch="x86_64">
+			<log text="Copying MongoDB C++ Driver libraries for armeabi-x64 to APK."/>
+			<copyFile src="$S(PluginDir)/../../ThirdParty/mongocxx/android-x64/libs/libmongocxx-x64.so"
+					  dst="$S(BuildDir)/libs/x86_64/libmongocxx.so" />
+		</isArch>
+	</resourceCopies>
+</root>

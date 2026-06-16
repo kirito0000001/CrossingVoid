@@ -1,0 +1,24 @@
+﻿{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.2.0",
+	"FriendlyName": "DreamAccount",
+	"Description": "Account servies",
+	"Category": "DreamPlugin",
+	"CreatedBy": "Dream Moon",
+	"CreatedByURL": "https://dmstudio.top",
+	"DocsURL": "https://docs.dmstudio.top",
+	"MarketplaceURL": "",
+	"CanContainContent": true,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "DreamAccount",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	],
+	"SupportURL": "https://github.com/typedreammoon/dreamaccount"
+}

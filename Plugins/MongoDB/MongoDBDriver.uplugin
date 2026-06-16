@@ -1,0 +1,28 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.2.0",
+	"FriendlyName": "MongoDB Driver",
+	"Description": "MongoDB for Unreal Engine",
+	"Category": "Database",
+	"CreatedBy": "Pandores",
+	"CreatedByURL": "https://www.unrealengine.com/marketplace/en-US/profile/Pandores?count=50&sortBy=effectiveDate&sortDir=DESC&start=0",
+	"DocsURL": "https://github.com/Pandoa/MongoDB-Driver/blob/main/README.md",
+	"MarketplaceURL": "com.epicgames.launcher://ue/marketplace/product/f43012495aac4e18b8630ec6fa949d02",
+	"SupportURL": "mailto:pandores.marketplace@gmail.com",
+	"CanContainContent": false,
+	"Installed": true,
+	"Modules": [
+		{
+			"Name": "MongoDBDriver",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [
+				"Win64",
+				"Linux",
+				"Android",
+				"IOS"
+			]
+		}
+	]
+}
