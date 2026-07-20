@@ -2,7 +2,9 @@
 Binaries/
 DerivedDataCache/
 Intermediate/
-Saved/
+Saved/*
+!Saved/UnrealBuildTool/
+!Saved/UnrealBuildTool/BuildConfiguration.xml
 
 # IDE and editor state
 .vs/
