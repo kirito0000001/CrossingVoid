@@ -1,0 +1,6 @@
+{
+  "Bucket": "download-server-xj",
+  "Endpoint": "https://oss-cn-chengdu.aliyuncs.com",
+  "Region": "cn-chengdu",
+  "OssProductRoot": "Akege304/CrossingVoid"
+}

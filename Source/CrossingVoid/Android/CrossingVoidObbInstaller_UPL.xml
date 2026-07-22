@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root xmlns:android="http://schemas.android.com/apk/res/android">
+    <androidManifestUpdates>
+        <addElements tag="application">
+            <activity
+                android:name="com.tfac.crossingvoid.ObbImportActivity"
+                android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|density|uiMode"
+                android:exported="true"
+                android:screenOrientation="sensorLandscape"
+                android:theme="@android:style/Theme.Material.NoActionBar">
+                <intent-filter>
+                    <action android:name="com.lingjing.launcher.action.INSTALL_OBB" />
+                    <category android:name="android.intent.category.DEFAULT" />
+                </intent-filter>
+            </activity>
+        </addElements>
+    </androidManifestUpdates>
+
+    <resourceCopies>
+        <copyFile
+            src="$S(PluginDir)/ObbImportActivity.java"
+            dst="$S(BuildDir)/src/com/tfac/crossingvoid/ObbImportActivity.java" />
+    </resourceCopies>
+
+    <proguardAdditions>
+        <insert>
+-keep class com.tfac.crossingvoid.ObbImportActivity { *; }
+        </insert>
+    </proguardAdditions>
+</root>

@@ -1,0 +1,13 @@
+// Copyright Qibo Pang 2023. All Rights Reserved.
+
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/SlateShaderCommon.ush"
+
+Texture2D ElementTexture;
+SamplerState ElementTextureSampler;
+
+float4 CopysampleMain(in noperspective float4 InUVAndScreenPos : TEXCOORD0) : SV_Target0
+{
+    float4 OutColor = Texture2DSample(ElementTexture, ElementTextureSampler, InUVAndScreenPos.xy);
+    return OutColor;
+}

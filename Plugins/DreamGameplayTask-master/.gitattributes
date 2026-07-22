@@ -1,0 +1,1 @@
+*.uasset filter=lfs merge=lfs -text

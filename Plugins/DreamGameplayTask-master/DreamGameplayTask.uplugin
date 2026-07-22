@@ -1,0 +1,29 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "3.0.0",
+	"FriendlyName": "DreamGameplayTask",
+	"Description": "Common Gameplay Task",
+	"Category": "DreamPlugin",
+	"CreatedBy": "DreamMoon",
+	"CreatedByURL": "https://dmstudio.top",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"CanContainContent": true,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "DreamGameplayTask",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "DreamGameplayTaskEditor",
+			"Type": "UncookedOnly",
+			"LoadingPhase": "PostEngineInit"
+		}
+	],
+	"SupportURL": ""
+}
