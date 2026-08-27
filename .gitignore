@@ -1,22 +1,52 @@
-# Unreal Engine generated files
+# Unreal Engine generated directories
 Binaries/
 DerivedDataCache/
 Intermediate/
-Saved/
-.vs/
-.idea/
-.vscode/
 
-# IDE and local files
+# Keep the project-level UnrealBuildTool configuration while ignoring other Saved data
+Saved/*
+!Saved/UnrealBuildTool/
+Saved/UnrealBuildTool/*
+!Saved/UnrealBuildTool/BuildConfiguration.xml
+
+# Generated cook and packaging metadata under Build
+Build/**/ChunkLayerInfo/
+Build/**/FileOpenOrder/
+Build/**/PipelineCaches/
+
+# Visual Studio
+.vs/
 *.sln
 *.suo
+*.sdf
+*.opensdf
 *.VC.db
 *.VC.VC.opendb
 *.user
 *.userosscache
-*.sdf
 
-# OS files
+# JetBrains Rider
+.idea/
+*.sln.DotSettings.user
+*.DotSettings.user
+
+# Other editors and generated project files
+.vscode/
+*.code-workspace
+compile_commands.json
+.clangd
+.cache/
+
+# Local diagnostics and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+*.userprefs
+
+# Operating system files
 Thumbs.db
 Desktop.ini
+.DS_Store
 
