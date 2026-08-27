@@ -708,7 +708,7 @@ void UFUCRealize::GetCharacterSum(F2DAtkDataStruct CharData,F2DAtkDataStruct Sub
 	CharBuffer.SkillLevel.SetNum(5);
 	CharBuffer.SkillLevel[3] = SubData.SkillLevel[3];
 
-	//准备计算角色技能等级，先获取角色技能等级总和
+	//准备计算角色连携技能等级，先获取角色技能等级总和
 	int SkillLevelOver = 0;
 	for (auto i : CharData.SkillLevel)
 	{

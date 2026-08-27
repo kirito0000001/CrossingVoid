@@ -38,7 +38,7 @@ struct FRateSubPhymag
 
 
 USTRUCT(Blueprintable)
-struct FSkillData2D
+struct FSkillData2D : public FTableRowBase
 {
 	GENERATED_BODY()
 	//技能图标
@@ -119,7 +119,7 @@ struct FINGameProData
 };
 
 USTRUCT(BlueprintType)
-struct F12SkData
+struct F12SkData : public FTableRowBase
 {
 	GENERATED_BODY()
 

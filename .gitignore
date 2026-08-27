@@ -1,22 +1,47 @@
-# Unreal Engine generated files
+# Unreal Engine generated directories
 Binaries/
+Build/
 DerivedDataCache/
 Intermediate/
-Saved/
-.vs/
-.idea/
-.vscode/
 
-# IDE and local files
+# Ignore Saved output except the shared UBT Git working-set safeguard
+Saved/*
+!Saved/UnrealBuildTool/
+Saved/UnrealBuildTool/*
+!Saved/UnrealBuildTool/BuildConfiguration.xml
+
+# Visual Studio
+.vs/
 *.sln
 *.suo
+*.sdf
+*.opensdf
 *.VC.db
 *.VC.VC.opendb
 *.user
 *.userosscache
-*.sdf
 
-# OS files
+# JetBrains Rider
+.idea/
+*.sln.DotSettings.user
+*.DotSettings.user
+
+# Other editors and generated project files
+.vscode/
+*.code-workspace
+compile_commands.json
+.clangd
+.cache/
+
+# Local diagnostics and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+*.userprefs
+
+# Operating system files
 Thumbs.db
 Desktop.ini
-
+.DS_Store
