@@ -54,8 +54,8 @@ public:
 	
 public:
 	FWidgetRenderer* WidgetRenderer;
-	TObjectPtr<UTextureRenderTarget2D> RenderTarget;
-	TObjectPtr<UMaterialInstanceDynamic> DynamicEffect;
+	UTextureRenderTarget2D* RenderTarget;
+	UMaterialInstanceDynamic* DynamicEffect;
 };
 
 TArray<SPostProcessWidget*, TInlineAllocator<3>> SPostProcessWidget::Shared_WaitingToRender;
@@ -359,17 +359,18 @@ SPostProcessWidget::EPaintBackgroundResult SPostProcessWidget::PaintBackgroundIm
 	if (bRenderRequested)
 	{
 		// In order to get material parameter collections to function properly, we need the current world's Scene
-		// properly propagated through to any widgets that depend on that functionality. The SceneViewport and PostProcessWidget the 
+		// properly propagated through to any widgets that depend on that functionality. The SceneViewport and PostProcessWidget the
 		// only location where this information exists in Slate, so we push the current scene onto the current
 		// Slate application so that we can leverage it in later calls.
+		UE::Slate::FSceneRegistrationScope SceneRegistrationScope;
 		UWorld* TickWorld = OuterWorld.Get();
 		if (TickWorld && TickWorld->Scene && IsInGameThread())
 		{
-			FSlateApplication::Get().GetRenderer()->RegisterCurrentScene(TickWorld->Scene);
+			SceneRegistrationScope = FSlateApplication::Get().GetRenderer()->RegisterCurrentScene(TickWorld->Scene);
 		}
 		else if (IsInGameThread())
 		{
-			FSlateApplication::Get().GetRenderer()->RegisterCurrentScene(nullptr);
+			SceneRegistrationScope = FSlateApplication::Get().GetRenderer()->RegisterCurrentScene(nullptr);
 		}
 
 		// Update the number of retainers we've drawn this frame.

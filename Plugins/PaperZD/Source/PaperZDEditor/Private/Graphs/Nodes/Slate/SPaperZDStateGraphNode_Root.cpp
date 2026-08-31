@@ -1,6 +1,7 @@
 // Copyright 2017 ~ 2022 Critical Failure Studio Ltd. All rights reserved.
 
 #include "Graphs/Nodes/Slate/SPaperZDStateGraphNode_Root.h"
+#include "Editors/Util/PaperZDVersionCompatibility.h"
 #include "Graphs/Nodes/PaperZDStateGraphNode_Root.h"
 #include "Widgets/SBoxPanel.h"
 #include "SGraphPin.h"
@@ -40,7 +41,9 @@ void SPaperZDStateGraphNode_Root::UpdateGraphNode()
 
 	FLinearColor TitleShadowColor(0.6f, 0.6f, 0.6f);
 
+#if !PAPERZD_UE_5_8_OR_LATER
 	this->ContentScale.Bind(this, &SGraphNode::GetContentScale);
+#endif
 	this->GetOrAddSlot(ENodeZone::Center)
 		.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)

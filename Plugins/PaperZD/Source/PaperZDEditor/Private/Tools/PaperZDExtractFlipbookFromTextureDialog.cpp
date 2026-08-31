@@ -19,7 +19,12 @@
 #include "PaperZDAnimInstance.h"
 #include "PropertyEditorModule.h"
 #include "SPrimaryButton.h"
+#include "Editors/Util/PaperZDVersionCompatibility.h"
+#if PAPERZD_UE_5_8_OR_LATER
+#include "Widgets/Input/SSearchableComboBox.h"
+#else
 #include "SSearchableComboBox.h"
+#endif
 #include "TextureCompiler.h"
 #include "TextureResource.h"
 

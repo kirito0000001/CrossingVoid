@@ -8,7 +8,7 @@
 class UPaperZDAnimationSource;
 
 /**
- * Class responsible of driving animation for 2d characters.
+ * Class responsible for driving animation for 2d characters.
  * Compiles into PaperZDAnimInstance, which is the runtime compiled class that works in-game.
  */
 UCLASS(Blueprintable)

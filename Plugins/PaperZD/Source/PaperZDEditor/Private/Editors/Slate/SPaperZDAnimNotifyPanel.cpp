@@ -33,8 +33,9 @@
 #include "Notifies/PaperZDAnimNotifyCustom.h"
 #include "Notifies/PaperZDAnimNotifyState.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "Util/PaperZDVersionCompatibility.h"
 
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 7
+#if PAPERZD_UE_5_7_OR_LATER
 #include "Misc/StringOutputDevice.h"
 #endif
 

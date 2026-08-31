@@ -2,6 +2,7 @@
 
 #include "PaperZDRuntimeEditorProxy.h"
 #include "PaperZDEditorSettings.h"
+#include "PaperZDVersionCompatibility.h"
 #include "AssetToolsModule.h"
 #include "Factories/PaperZDAnimSequenceFactory.h"
 #include "Factories/PaperZDAnimationSourceFactory.h"
@@ -207,13 +208,17 @@ void FPaperZDRuntimeEditorProxy::UpdateVersionToAnimBlueprintRework(UPaperZDAnim
 	UEdGraph* AnimationGraph = InAnimBP->AnimationGraph;
 	const UPaperZDAnimGraphSchema* Schema = GetDefault<UPaperZDAnimGraphSchema>();
 
-	//Need to enforce the loading flag otherwise some RENAME operations will crash due to loaders being reset, this flag will make the rename use the flag REN_ForceNoResetLoaders instead.
+	// Keep the asset in its load-time regeneration path while restructuring the graph.
 	const bool bGuardLoading = InAnimBP->bIsRegeneratingOnLoad;
 	InAnimBP->bIsRegeneratingOnLoad = true;
 
 	//~~~~
 	//Stage 0, Setup the metadata
+#if PAPERZD_UE_5_8_OR_LATER
+	AnimationGraph->Rename(*UPaperZDAnimGraphSchema::GN_AnimGraph.ToString());
+#else
 	AnimationGraph->Rename(*UPaperZDAnimGraphSchema::GN_AnimGraph.ToString(), nullptr, REN_ForceNoResetLoaders);
+#endif
 
 	//~~~~
 	//Stage 1, create a transient EdGraph, and pass all the nodes to it.
