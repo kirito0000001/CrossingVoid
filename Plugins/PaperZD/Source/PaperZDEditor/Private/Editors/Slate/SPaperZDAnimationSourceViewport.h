@@ -5,7 +5,7 @@
 #include "SEditorViewport.h"
 #include "SCommonEditorViewportToolbarBase.h"
 #include "PaperZDAnimationSourceViewportClient.h"
-#include "Runtime/Launch/Resources/Version.h"
+#include "Util/PaperZDVersionCompatibility.h"
 
 class UPaperZDAnimationSource;
 
@@ -33,7 +33,7 @@ public:
 	virtual EVisibility GetTransformToolbarVisibility() const override;
 	virtual void OnFocusViewportToSelection() override;
 
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 7 
+#if PAPERZD_UE_5_7_OR_LATER 
 	virtual TSharedPtr<SWidget> BuildViewportToolbar() override { return SNew(SVerticalBox); }
 #else
 	virtual TSharedPtr<SWidget> MakeViewportToolbar() override { return SNew(SVerticalBox); }

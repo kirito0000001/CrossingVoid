@@ -9,9 +9,9 @@ public class CrossingVoidServerTarget : TargetRules
     public CrossingVoidServerTarget(TargetInfo Target) : base(Target)
 	{
 		Type = TargetType.Server;
-		IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
+		IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_8;
 		BuildEnvironment = TargetBuildEnvironment.Unique;
-		DefaultBuildSettings = BuildSettingsVersion.V5;
+		DefaultBuildSettings = BuildSettingsVersion.V7;
 		ExtraModuleNames.Add("CrossingVoid");
 	}
 }

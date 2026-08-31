@@ -1,6 +1,7 @@
 // Copyright 2017 ~ 2022 Critical Failure Studio Ltd. All rights reserved.
 
 #include "Graphs/Nodes/Slate/SPaperZDStateGraphNode_State.h"
+#include "Editors/Util/PaperZDVersionCompatibility.h"
 #include "Graphs/Nodes/PaperZDStateGraphNode_State.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Images/SImage.h"
@@ -111,7 +112,9 @@ void SPaperZDStateGraphNode_State::UpdateGraphNode()
 	TSharedPtr<SErrorText> ErrorText;
 	TSharedPtr<SNodeTitle> NodeTitle = SNew(SNodeTitle, GraphNode);
 
+#if !PAPERZD_UE_5_8_OR_LATER
 	this->ContentScale.Bind(this, &SGraphNode::GetContentScale);
+#endif
 	this->GetOrAddSlot(ENodeZone::Center)
 		.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)

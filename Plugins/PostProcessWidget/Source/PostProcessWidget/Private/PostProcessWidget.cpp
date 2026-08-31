@@ -13,8 +13,6 @@ static FName DefaultTextureParameterName("Texture");
 /////////////////////////////////////////////////////
 // UPostProcessWidget
 
-PRAGMA_DISABLE_DEPRECATION_WARNINGS
-
 UPostProcessWidget::UPostProcessWidget(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
@@ -25,8 +23,6 @@ UPostProcessWidget::UPostProcessWidget(const FObjectInitializer& ObjectInitializ
 	RenderOnInvalidation = false;
 	TextureParameter = DefaultTextureParameterName;
 }
-
-PRAGMA_ENABLE_DEPRECATION_WARNINGS
 
 void UPostProcessWidget::SetRenderingPhase(int32 PhaseToRenderOn, int32 TotalRenderingPhases)
 {

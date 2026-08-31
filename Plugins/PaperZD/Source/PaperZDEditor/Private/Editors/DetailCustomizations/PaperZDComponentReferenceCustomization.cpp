@@ -1,6 +1,7 @@
 // Copyright 2017 ~ 2023 Critical Failure Studio Ltd. All rights reserved.
 
 #include "Editors/DetailCustomizations/PaperZDComponentReferenceCustomization.h"
+#include "Editors/Util/PaperZDVersionCompatibility.h"
 #include "PaperZDComponentReference.h"
 #include "ActorPickerMode.h"
 #include "Brushes/SlateNoResource.h"
@@ -382,7 +383,11 @@ FPropertyAccess::Result FPaperZDComponentReferenceCustomization::GetValue(FCompo
 {
 	// Potentially accessing the value while garbage collecting or saving the package could trigger a crash.
 	// so we fail to get the value when that is occurring.
+#if PAPERZD_UE_5_8_OR_LATER
+	if (UE::IsSavingPackage() || IsGarbageCollecting())
+#else
 	if (GIsSavingPackage || IsGarbageCollecting())
+#endif
 	{
 		return FPropertyAccess::Fail;
 	}

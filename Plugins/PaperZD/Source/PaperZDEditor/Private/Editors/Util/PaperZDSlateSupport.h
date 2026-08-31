@@ -3,11 +3,11 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Runtime/Launch/Resources/Version.h"
+#include "Util/PaperZDVersionCompatibility.h"
 
 namespace ZD::Slate
 {
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 6
+#if PAPERZD_UE_5_6_OR_LATER
 	using FVector2 = FVector2f;
 	using FBox2 = FBox2f;
 #else

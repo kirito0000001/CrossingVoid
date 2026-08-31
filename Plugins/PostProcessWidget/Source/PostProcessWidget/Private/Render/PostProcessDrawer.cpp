@@ -169,7 +169,7 @@ struct FSlateClippingCreateContext
 	ESlateClippingStencilAction StencilAction = ESlateClippingStencilAction::None;
 };
 
-const FSlateClippingOp* CreateSlateClippingNative(FRDGBuilder& GraphBuilder, const FVector2f ElementsOffset, const FSlateClippingState* ClippingState, FSlateClippingCreateContext& Context)
+const FSlateClippingOp* CreateSlateClipping(FRDGBuilder& GraphBuilder, const FVector2f ElementsOffset, const FSlateClippingState* ClippingState, FSlateClippingCreateContext& Context)
 {
 	Context.StencilAction = ESlateClippingStencilAction::None;
 
@@ -313,7 +313,7 @@ void FPostProcessDrawer::Draw_RenderThread(FRDGBuilder& GraphBuilder, const FDra
 
 	FSlateClippingCreateContext Context;
 	FVector2f ElementsOffset = Inputs.ElementsOffset;
-	const FSlateClippingOp* ClippingOp = CreateSlateClippingNative(GraphBuilder, ElementsOffset, ClippingState, Context);
+	const FSlateClippingOp* ClippingOp = CreateSlateClipping(GraphBuilder, ElementsOffset, ClippingState, Context);
 
 	{
 		FSlatePostProcessCopyRectPassInputs CopyInputs;

@@ -1,4 +1,4 @@
-// Copyright Qibo Pang 2023. All Rights Reserved.
+﻿// Copyright Qibo Pang 2023. All Rights Reserved.
 
 #pragma once
 
@@ -15,8 +15,8 @@ class UTextureRenderTarget2D;
 
 struct FPostProcessRectParams
 {
-	FTextureRHIRef SourceTexture;
-	FTextureRHIRef TargetTexture;
+	FRHITexture* SourceTexture;
+	FRHITexture* TargetTexture;
 	FSlateRect SourceRect;
 	FSlateRect DestRect;
 	FIntPoint SourceTextureSize;

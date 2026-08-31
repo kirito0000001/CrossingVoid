@@ -2,14 +2,13 @@
 
 #pragma once
 #include "CoreMinimal.h"
+#include "Editors/Util/PaperZDVersionCompatibility.h"
 #include "Input/CursorReply.h"
 #include "Input/Reply.h"
 #include "Widgets/SWidget.h"
 #include "Editors/AnimTimeline/SPaperZDAnimTimeline.h"
 #include "ITimeSlider.h"
-#include "Runtime/Launch/Resources/Version.h"
-
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 3
+#if PAPERZD_UE_5_3_OR_LATER
 #include "TimeSliderArgs.h"
 #endif
 
@@ -35,7 +34,11 @@ public:
 	virtual FReply OnMouseButtonUp(SWidget& WidgetOwner, const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 	virtual FReply OnMouseMove(SWidget& WidgetOwner, const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 	virtual FReply OnMouseWheel(SWidget& WidgetOwner, const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
+#if PAPERZD_UE_5_8_OR_LATER
+	virtual FCursorReply OnCursorQuery(const SWidget& WidgetOwner, const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const override;
+#else
 	virtual FCursorReply OnCursorQuery(TSharedRef<const SWidget> WidgetOwner, const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const override;
+#endif
 	virtual void SetViewRange(double NewRangeMin, double NewRangeMax, EViewRangeInterpolation Interpolation) override;
 	virtual void SetClampRange(double NewRangeMin, double NewRangeMax) override;
 	virtual void SetPlayRange(FFrameNumber RangeStart, int32 RangeDuration) override;

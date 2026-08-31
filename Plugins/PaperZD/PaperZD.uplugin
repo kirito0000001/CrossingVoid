@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
-	"Version": 32,
-	"VersionName": "2.2.3",
+	"Version": 33,
+	"VersionName": "2.2.4",
 	"FriendlyName": "PaperZD",
 	"Description": "Animation Graph and Notify Support for 2D Development",
 	"Category": "Other",
@@ -10,7 +10,7 @@
 	"DocsURL": "",
 	"MarketplaceURL": "com.epicgames.launcher://ue/marketplace/content/c4b43502026047d89296cd7bffd92828",
 	"SupportURL": "",
-	"EngineVersion": "5.6.0",
+	"EngineVersion": "5.8.0",
 	"CanContainContent": true,
 	"Installed": true,
 	"Modules": [

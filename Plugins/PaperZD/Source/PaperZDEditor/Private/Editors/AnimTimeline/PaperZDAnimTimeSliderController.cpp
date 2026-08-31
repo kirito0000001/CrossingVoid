@@ -3,6 +3,7 @@
 #include "Editors/AnimTimeline/PaperZDAnimTimeSliderController.h"
 #include "Editors/AnimTimeline/PaperZDAnimModel.h"
 #include "Editors/Util/PaperZDEditorSettings.h"
+#include "Editors/Util/PaperZDVersionCompatibility.h"
 #include "Fonts/SlateFontInfo.h"
 #include "Rendering/DrawElements.h"
 #include "Misc/Paths.h"
@@ -17,10 +18,6 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "MovieSceneTimeHelpers.h"
 #include "CommonFrameRates.h"
-
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 3
-#include "TimeSliderArgs.h"
-#endif
 
 #define LOCTEXT_NAMESPACE "PaperZDEditor_AnimTimeSliderController"
 
@@ -829,7 +826,11 @@ FReply FPaperZDAnimTimeSliderController::OnMouseWheel(SWidget& WidgetOwner, cons
 	return FReply::Unhandled();
 }
 
+#if PAPERZD_UE_5_8_OR_LATER
+FCursorReply FPaperZDAnimTimeSliderController::OnCursorQuery(const SWidget& WidgetOwner, const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const
+#else
 FCursorReply FPaperZDAnimTimeSliderController::OnCursorQuery(TSharedRef<const SWidget> WidgetOwner, const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const
+#endif
 {
 	FScrubRangeToScreen RangeToScreen(TimeSliderArgs.ViewRange.Get(), MyGeometry.Size);
 
