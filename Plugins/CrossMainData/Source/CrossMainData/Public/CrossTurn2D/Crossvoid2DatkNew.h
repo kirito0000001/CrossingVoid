@@ -131,7 +131,7 @@ struct F12SkData : public FTableRowBase
 };
 
 USTRUCT(BlueprintType)
-struct F12SkData2
+struct F12SkData2 : public FTableRowBase
 {
 	GENERATED_BODY()
 

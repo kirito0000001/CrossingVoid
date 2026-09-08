@@ -2,7 +2,9 @@
 Binaries/
 Build/
 DerivedDataCache/
+LocalDerivedDataCache/
 Intermediate/
+Script/
 
 # Ignore Saved output except the shared UBT Git working-set safeguard
 Saved/*

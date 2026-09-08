@@ -729,12 +729,9 @@ struct FPlotMapDataStruct : public FTableRowBase
 
 //护援人物头像结构体
 USTRUCT(BlueprintType)
-struct FCharacterSupportData
+struct FCharacterSupportData : public FTableRowBase
 {
 	GENERATED_BODY()
-
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, DisplayName="是谁的")
-	FString CharName = {};
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, DisplayName="1P头像")
 	TSoftObjectPtr<UTexture2D> Sub1P = {};
