@@ -133,7 +133,17 @@ param(
     [switch]$ClearCache,
 
     # 只读查询：报告 / 产物 / 基线三件事，给页面上的状态行用。查完就退出。
-    [switch]$Status
+    [switch]$Status,
+
+    # 多进程 cook（MPCook，UE5.3+）：把 cook 拆成「1 个 director + (N-1) 个 cook worker」好几个进程并行跑。
+    # 引擎里的开关就是 -CookProcessCount=N —— 出处是引擎自带注释（Engine\Config\BaseEditor.ini 的 [CookSettings]）：
+    #   "CookProcessCount=(1 or less) is singleprocess. CookProcessCount=(N>1) is 1 director and N-1 cookworkers."
+    # UAT 的 ProjectParams 里没有这个参数，所以只能靠 -AdditionalCookerOptions 透传给 cooker。
+    # 默认 1 = 单进程（现状）。两条硬约束都来自 CookDirector 源码：
+    #   · CPU 是硬切的：CoreLimit = 物理核数 / 进程数，所以进程数超过物理核只会互相拖慢；
+    #   · 每个 worker 都是一整个 editor 进程。多进程下引擎会把"低内存就 GC"的保护关掉
+    #     （只留 Critical 压力才 GC），内存不够是直接跟系统抢，不会优雅降级。
+    [int]$CookProcessCount = 1
 )
 $ErrorActionPreference = 'Stop'
 
@@ -156,6 +166,59 @@ function Assert-Path {
     if (-not (Test-Path -LiteralPath $Path)) {
         throw "[检查失败] 找不到${What}：`n  $Path"
     }
+}
+
+# ============================ 清归档目录 ============================
+# 为什么需要：UAT 归档只复制、从不删（ArchiveCommand.Automation.cs:40-52 的
+# ApplyArchiveManifest 里只有 CopyFileOrSymlink），所以上一版从工程里删掉的资源
+# 会永远躺在归档目录里。服务器走 git 的话，这些"幽灵文件"会被一起提交、
+# 也永远不会从线上消失（散件模式下引擎是按路径读 Content 的，旧资源甚至可能还被加载到）。
+# 铁律：路径里任何一级叫 Saved 的一律不碰 —— 那是服务器的玩家数据（存档/配置）。
+# 返回删了多少项、保留了几处 Saved，调用方打印用。
+function Clear-ArchiveExceptSaved {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $RootFull = [System.IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $RootFull)) {
+        return [pscustomobject]@{ Removed = 0; KeptSaved = 0 }
+    }
+
+    $Sep = [System.IO.Path]::DirectorySeparatorChar
+    function Test-IsUnderSaved {
+        param([string]$FullName)
+        $Rel = $FullName.Substring($RootFull.Length).TrimStart($Sep)
+        if ([string]::IsNullOrEmpty($Rel)) { return $false }
+        foreach ($Seg in ($Rel -split '[\\/]')) { if ($Seg -eq 'Saved') { return $true } }
+        return $false
+    }
+    # 不跟 reparse point（junction/symlink）走，避免删到目录外面去
+    $Normal = { param($i) -not ($i.Attributes -band [System.IO.FileAttributes]::ReparsePoint) }
+
+    $Removed = 0
+    $KeptSaved = 0
+
+    # 1) 删文件（Saved 下面的一律跳过）
+    foreach ($f in (Get-ChildItem -LiteralPath $RootFull -Recurse -Force -File -ErrorAction SilentlyContinue | Where-Object $Normal)) {
+        if (Test-IsUnderSaved $f.FullName) { continue }
+        Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop
+        $Removed++
+    }
+
+    # 2) 再删空目录。Saved 自己不能删；而它的祖先目录因为"里面还有 Saved"仍然非空，会被自动保住。
+    $Dirs = Get-ChildItem -LiteralPath $RootFull -Recurse -Force -Directory -ErrorAction SilentlyContinue |
+        Where-Object $Normal | Sort-Object { $_.FullName.Length } -Descending
+    foreach ($d in $Dirs) {
+        if (Test-IsUnderSaved $d.FullName) {
+            if ((Split-Path -Leaf $d.FullName) -eq 'Saved') { $KeptSaved++ }
+            continue
+        }
+        if (@(Get-ChildItem -LiteralPath $d.FullName -Force -ErrorAction SilentlyContinue).Count -eq 0) {
+            Remove-Item -LiteralPath $d.FullName -Force -ErrorAction Stop
+            $Removed++
+        }
+    }
+
+    return [pscustomobject]@{ Removed = $Removed; KeptSaved = $KeptSaved }
 }
 
 # ============================ cook 缓存体检 ============================
@@ -199,6 +262,104 @@ function Test-CookCacheDirty {
         $Result.Reason = "Cooked 里没扫到项目内容（路径 $CookedContent？）"
     }
     return $Result
+}
+
+# ============================ 平台设置快照 ============================
+# 打包和平台设置"分得比较开"，容易打完才想起来没改。所以每次打包前把当时
+# 真正生效的设置打印一遍并落成 json（报告里也会带上），以后查"这包是哪套设置打的"。
+# 密码类字段一律不记录。
+function Get-PlatformSettingsSnapshot {
+    param([string]$Root)
+
+    $EngineIni = Join-Path $Root 'Config\DefaultEngine.ini'
+    $AndroidKeys = @(
+        'PackageName', 'ApplicationDisplayName', 'VersionDisplayName', 'StoreVersion',
+        'MinSDKVersion', 'TargetSDKVersion', 'bBuildForArm64', 'bBuildForX8664',
+        'bPackageDataInsideApk', 'bEnableBundle', 'Orientation', 'KeyStore', 'KeyAlias'
+    )
+
+    $Android = [ordered]@{}
+    if (Test-Path -LiteralPath $EngineIni) {
+        $inSection = $false
+        foreach ($line in (Get-Content -LiteralPath $EngineIni -Encoding UTF8)) {
+            $t = $line.Trim()
+            if ($t.StartsWith('[')) {
+                $inSection = ($t -eq '[/Script/AndroidRuntimeSettings.AndroidRuntimeSettings]')
+                continue
+            }
+            if (-not $inSection -or $t.StartsWith(';')) { continue }
+            $kv = $t -split '=', 2
+            if ($kv.Count -eq 2 -and ($AndroidKeys -contains $kv[0])) { $Android[$kv[0]] = $kv[1] }
+        }
+    }
+
+    $WinIcon = Join-Path $Root 'Build\Windows\Application.ico'
+    $WinIconExists = Test-Path -LiteralPath $WinIcon
+    $AndroidRes = Join-Path $Root 'Build\Android\res'
+    $AndroidIcons = @(Get-ChildItem -LiteralPath $AndroidRes -Recurse -Filter 'icon.png' -ErrorAction SilentlyContinue)
+    $AndroidIconTime = if ($AndroidIcons.Count -gt 0) {
+        ($AndroidIcons | Sort-Object LastWriteTime -Descending | Select-Object -First 1).LastWriteTime.ToString('yyyy-MM-dd HH:mm')
+    } else { '' }
+
+    # 和引擎自带的默认图标逐个比 hash：一模一样 = 还没有换过（比看大小/靠感觉可靠）
+    # 引擎默认位置：<Engine>\Build\Android\Java\res\drawable*/icon.png
+    $EngineRes = Join-Path $EngineRoot 'Engine\Build\Android\Java\res'
+    $IconCompared = 0
+    $IconDefault = 0
+    foreach ($icon in $AndroidIcons) {
+        $rel = $icon.FullName.Substring($AndroidRes.Length).TrimStart('\')
+        $engineIcon = Join-Path $EngineRes $rel
+        if (-not (Test-Path -LiteralPath $engineIcon)) { continue }
+        $IconCompared++
+        if ((Get-FileHash -LiteralPath $icon.FullName -Algorithm MD5).Hash -eq
+            (Get-FileHash -LiteralPath $engineIcon -Algorithm MD5).Hash) { $IconDefault++ }
+    }
+
+    return [ordered]@{
+        android      = $Android
+        windowsIcon  = [ordered]@{
+            path      = $WinIcon
+            exists    = $WinIconExists
+            kb        = if ($WinIconExists) { [math]::Round((Get-Item -LiteralPath $WinIcon).Length / 1KB, 1) } else { 0 }
+            lastWrite = if ($WinIconExists) { (Get-Item -LiteralPath $WinIcon).LastWriteTime.ToString('yyyy-MM-dd HH:mm') } else { '' }
+            folder    = (Join-Path $Root 'Build\Windows')
+        }
+        androidIcons = [ordered]@{
+            count        = $AndroidIcons.Count
+            lastWrite    = $AndroidIconTime
+            folder       = $AndroidRes
+            compared     = $IconCompared
+            defaultCount = $IconDefault
+        }
+    }
+}
+
+function Show-PlatformSettings {
+    param($S)
+
+    Write-Host '[平台设置]' -ForegroundColor Cyan
+    $a = $S.android
+    if ($a.Count -gt 0) {
+        Write-Host ('  安卓   版本 {0} · 包名 {1}' -f $a['VersionDisplayName'], $a['PackageName']) -ForegroundColor Gray
+        Write-Host ('         显示名 {0} · 商店版本号 {1}' -f $a['ApplicationDisplayName'], $a['StoreVersion']) -ForegroundColor Gray
+        Write-Host ('         SDK {0}/{1} · ABI arm64={2} x86_64={3} · APK内打包数据={4}' -f `
+                $a['MinSDKVersion'], $a['TargetSDKVersion'], $a['bBuildForArm64'], $a['bBuildForX8664'], $a['bPackageDataInsideApk']) -ForegroundColor Gray
+        if ($S.androidIcons.compared -gt 0 -and $S.androidIcons.defaultCount -eq $S.androidIcons.compared) {
+            Write-Host ('         [警告] 安卓图标 {0} 张全是引擎默认（还没换过）—— 去「项目设置 → 平台 → Android → 图标」换' -f $S.androidIcons.count) -ForegroundColor Yellow
+        }
+        elseif ($S.androidIcons.defaultCount -gt 0) {
+            Write-Host ('         [警告] 安卓图标里有 {0}/{1} 张还是引擎默认 —— 去「项目设置 → 平台 → Android → 图标」换' -f $S.androidIcons.defaultCount, $S.androidIcons.compared) -ForegroundColor Yellow
+        }
+        else {
+            Write-Host ('         安卓图标 {0} 张（最近改于 {1}）' -f $S.androidIcons.count, $S.androidIcons.lastWrite) -ForegroundColor Gray
+        }
+    }
+    if ($S.windowsIcon.exists) {
+        Write-Host ('  Windows  图标 {0} KB（{1}）' -f $S.windowsIcon.kb, $S.windowsIcon.lastWrite) -ForegroundColor Gray
+    }
+    else {
+        Write-Host '  Windows  [警告] 没有 Build\Windows\Application.ico —— 现在用的是引擎默认图标（这个没有界面设置，把 .ico 放进 Build\Windows\ 就行）' -ForegroundColor Yellow
+    }
 }
 
 
@@ -285,10 +446,19 @@ if ($Status) {
     Write-Output ("STATUS_REPORT={0}|{1}|{2}" -f $RepTime, $RepMode, (Test-Path -LiteralPath $ReportPath))
 
     # ② 产物：归档目录下对应平台的子目录（Windows / WindowsServer / Android）
-    $ArtifactPath = Join-Path $ArchiveDir $PlatformDir
+    # 服务器散件的归档目录是 <ArchiveDir>\WindowsServer，跟客户端那份 <ArchiveDir>\Windows
+    # 是两回事。原来用 "$PlatformDir*" 前缀匹配，Windows 会先命中，于是选服务器时
+    # 那一格显示的是客户端产物（2026-09-20 修）。
+    $ArtifactName = if ($Target -eq 'Server') { 'WindowsServer' } else { $PlatformDir }
+    $ArtifactPath = Join-Path $ArchiveDir $ArtifactName
     if (Test-Path -LiteralPath $ArchiveDir) {
         $cand = Get-ChildItem -LiteralPath $ArchiveDir -Directory -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -like "$PlatformDir*" } | Select-Object -First 1
+            Where-Object { $_.Name -ieq $ArtifactName } | Select-Object -First 1
+        if (-not $cand) {
+            # 兜底：目录名带后缀（老归档、或以后改名）时按前缀再找一个
+            $cand = Get-ChildItem -LiteralPath $ArchiveDir -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -like "$ArtifactName*" } | Select-Object -First 1
+        }
         if ($cand) { $ArtifactPath = $cand.FullName }
     }
     Write-Output ("STATUS_ARTIFACT={0}|{1}" -f $ArtifactPath, (Test-Path -LiteralPath $ArtifactPath))
@@ -311,11 +481,13 @@ if ($Status) {
         baselinePath    = $BaselinePath
         baselineExists  = [bool]($BaselinePath -and (Test-Path -LiteralPath $BaselinePath))
         releaseRoot     = $ReleaseRoot
+        platformSettings = Get-PlatformSettingsSnapshot -Root $ProjectRoot
     }
     $StatusDir = Split-Path $StatusPath -Parent
     if (-not (Test-Path -LiteralPath $StatusDir)) { $null = New-Item -ItemType Directory -Path $StatusDir -Force }
     [System.IO.File]::WriteAllText($StatusPath, ($StatusObj | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))
     Write-Output ("STATUS_FILE={0}" -f $StatusPath)
+    Show-PlatformSettings -S $StatusObj.platformSettings
     return
 }
 
@@ -468,6 +640,10 @@ function Build-UatArgs {
     }
 
     # --- cook ---
+    if ($CookProcessCount -gt 1) {
+        $args.Add("-AdditionalCookerOptions=-CookProcessCount=$CookProcessCount")
+        Write-Host ("[多进程 cook] CookProcessCount={0}（1 个 director + {1} 个 cook worker）" -f $CookProcessCount, ($CookProcessCount - 1)) -ForegroundColor Cyan
+    }
     if ($Mode -eq 'Quick') {
         $args.Add('-cook')
         if ($PackTarget -eq 'Server') {
@@ -503,6 +679,14 @@ function Build-UatArgs {
             $args.Add('-pak')
             $args.Add('-compressed')
         }
+        # 安卓必须显式加 -package：APK 和 OBB 都是 UAT 的 "Package" 阶段生成的
+        # （PackageCommand.Automation.cs:17 —— Project.Package 只在 -package 或 -deploy 时才跑）。
+        # 不加的话流程是 stage → 直接 archive，archive 会去要 OBB 并报
+        #   "ARCHIVE FAILED - <...>main.1.<包名>.obb was not found"（ExitCode=53）。
+        # Windows 不需要这一步（产物就是 staged 文件 + pak），所以只有安卓会暴露这个问题。
+        if ($Platform -eq 'Android') {
+            $args.Add('-package')
+        }
         $args.Add('-archive')
         $args.Add("-archivedirectory=$OutDir")
 
@@ -521,14 +705,16 @@ function Build-UatArgs {
             $ReleaseSub = if ($PackTarget -eq 'Server') { "$PlatformDir-Server" } else { $PlatformDir }
             $ReleaseDir = Join-Path $ReleaseRoot "$ReleaseVersion\$ReleaseSub"
             if (Test-Path -LiteralPath $ReleaseDir) {
-                throw @"
-[安全检查] 基线版本 $ReleaseVersion（$PackTarget）已存在！
-
-  $ReleaseDir
-
-  覆盖基线会让后续所有 patch 的差异全部算错。
-  要么换一个版本号，要么先手动删掉上面这个目录。
-"@
+                # 《版本更新》的语义就是"更新 / 重建基线"：同一个版本号再跑一次 = 重建它，旧的直接删。
+                # 删之前只做一层兜底：解析出来的路径必须还在基线根目录里，防止路径拼错删到别处。
+                $ResolvedRelease = (Resolve-Path -LiteralPath $ReleaseDir).Path
+                if (-not $ResolvedRelease.StartsWith($ReleaseRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    throw "[安全检查] 基线路径不在 $ReleaseRoot 里，拒绝删除：$ResolvedRelease"
+                }
+                Write-Host ''
+                Write-Host "[基线] $ReleaseVersion（$PackTarget）已有基线 —— 按《版本更新》的语义重建，旧的直接删除" -ForegroundColor Yellow
+                Write-Host "       $ResolvedRelease" -ForegroundColor DarkGray
+                Remove-Item -LiteralPath $ReleaseDir -Recurse -Force
             }
 
             $args.Add("-createreleaseversion=$ReleaseVersion")
@@ -572,10 +758,25 @@ function Build-UatArgs {
 
             $args.Add('-generatepatch')
             $args.Add("-basedonreleaseversion=$ReleaseVersion")
-            $args.Add('-prereqs')
             # 去同一个根目录找基线
             $args.Add("-basedonreleaseversionroot=$ReleaseRoot")
         }
+    }
+
+    # ---- Windows 客户端的运行库安装器（官方开关：UAT -prereqs）----
+    # 只有带 -prereqs 时，引擎才会把 Engine\Extras\Redist\en-us 下的
+    # vc_redist.x64.exe / vc_redist.arm64.exe 一起 stage 进产物
+    # （见 WinPlatform.Automation.cs 的 if (Params.Prereqs)）；
+    # GameInputRedist.msi 还要求项目 Config/DefaultEngine.ini 里写
+    #   [GameInput]
+    #   IncludeRedistFiles=True
+    # 包根启动器启动前检查的就是这两个：机器上缺 GameInput 时它会弹"要现在安装吗"，
+    # 而它要装的那个 msi 必须就在这个位置，否则弹窗会卡死在没桌面的会话里
+    # （2026-09-19 服务器上就是这么卡的：切完版本端口一直不监听）。
+    # 原来这个参数只加在 Patch 分支，所以 Base / 正式打包出来的产物都没有它们。
+    # 只给 PC 客户端加：服务器在部署时手动装，安卓用不到。
+    if ($Platform -eq 'Win64' -and $PackTarget -eq 'Client') {
+        $args.Add('-prereqs')
     }
 
     # ---- 编译一律交给外部（Rider / 你手动），打包默认【不编译】----
@@ -632,13 +833,15 @@ if (-not (Test-Path -LiteralPath $LogDir)) {
 # 结果还是 11247 个包（≈全量）。所以要让"只勾选的地图"真正生效，
 # 只能在打包期间把 ini 里那份清单换成勾选的那几张，打完立刻还原。
 $GameIniPath = Join-Path $ProjectRoot 'Config\DefaultGame.ini'
-$MapsBackupPath = Join-Path $ProjectRoot 'Config\DefaultGame.ini.bak-maps-tmp'
-$bMapsOverridden = $false
+# 备份一份原件；下面「地图清单」和「服务器散件」两处改写共用这一份，跑完统一还原
+$GameIniBackupPath = Join-Path $ProjectRoot 'Config\DefaultGame.ini.bak-tmp'
+$bGameIniOverridden = $false
 
 if (-not $DryRun -and -not [string]::IsNullOrWhiteSpace($Maps)) {
     $PickedMaps = @($Maps -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
     if ($PickedMaps.Count -gt 0) {
-        Copy-Item -LiteralPath $GameIniPath -Destination $MapsBackupPath -Force
+        Copy-Item -LiteralPath $GameIniPath -Destination $GameIniBackupPath -Force
+        $bGameIniOverridden = $true
 
         $NewLines = [System.Collections.Generic.List[string]]::new()
         $bWritten = $false
@@ -657,7 +860,6 @@ if (-not $DryRun -and -not [string]::IsNullOrWhiteSpace($Maps)) {
             foreach ($Map in $PickedMaps) { $NewLines.Add("+MapsToCook=(FilePath=`"$Map`")") }
         }
         [System.IO.File]::WriteAllLines($GameIniPath, $NewLines, (New-Object System.Text.UTF8Encoding($true)))
-        $bMapsOverridden = $true
         Write-Host "[地图] 本次只 cook：$($PickedMaps -join '、')（已临时改写 DefaultGame.ini，打完自动还原）" -ForegroundColor Yellow
 
         # 留个标记文件：Write-Host 进不了 pack 日志（那是 UAT 的输出），
@@ -668,6 +870,75 @@ if (-not $DryRun -and -not [string]::IsNullOrWhiteSpace($Maps)) {
             "本次只 cook : $($PickedMaps -join ', ')",
             "参数 -Maps : $Maps"
         ) | Set-Content -LiteralPath $MapMarkerPath -Encoding UTF8
+    }
+}
+
+# ---- 服务器：临时把打包方式切成「散件」（关 ZenStore / IoStore / Pak）----
+# 为什么必须改：DefaultGame.ini 现在是 UsePakFile=True + bUseIoStore=True + bUseZenStore=True。
+# 这套组合下 cook 的结果【不进盘】—— 全流进 Zen 的 oplog，只有 -pak 那一步才会把它
+# 物化成 Content\Paks\*.utoc/.ucas。而服务器这条路从来不打 pak（要出散件给 git 用），
+# 于是 stage 出来是 0 个内容文件：2026-09-19 实测包内只有 24 个文件、连 Content 都没有，
+# 服务器一启动就崩在 ICUInternationalization.cpp:161「ICU data directory was not discovered」。
+# 这三项都是 UAT / 引擎直接从工程 ini 读的（ZenUtils.cs:707 读 bUseZenStore；
+# CopyBuildToStagingDirectory.Automation.cs:3018 用 ShouldTreatAsFileServer 决定要不要复制散件），
+# 命令行没有覆盖开关 —— 所以只能临时改写 ini，和上面的地图改写共用同一份备份。
+# 详见 Tools\打包说明.md 的「服务器为什么出散件」一节。
+$bLooseServerPack = $false
+$bAlsoClientRun   = $false
+foreach ($Run in $RunList) {
+    if ($Run.Name -eq 'Server') { $bLooseServerPack = $true }
+    if ($Run.Name -eq 'Client') { $bAlsoClientRun  = $true }
+}
+if ($bLooseServerPack -and $bAlsoClientRun) {
+    # 服务器要关 ZenStore 才出得来散件，而客户端的分包（-RunChunkAssigner）恰恰要靠 Zen 的 oplog，
+    # 两者没法在同一次打包里共存 —— 一次只打一侧。
+    throw '[服务器散件] -Target Both 不行：服务器要关 ZenStore 才能出散件，客户端分包必须开 ZenStore。请分两次打。'
+}
+
+if ($bLooseServerPack) {
+    if ($DryRun) {
+        Write-Host '[服务器散件] (DryRun) 本应临时关掉 UsePakFile / bUseIoStore / bUseZenStore，并清掉旧的 Saved\Cooked\WindowsServer' -ForegroundColor Yellow
+    }
+    else {
+        if (-not $bGameIniOverridden) {
+            Copy-Item -LiteralPath $GameIniPath -Destination $GameIniBackupPath -Force
+            $bGameIniOverridden = $true
+        }
+
+        $LooseKeys = @('UsePakFile', 'bUseIoStore', 'bUseZenStore')
+        $NewLines = [System.Collections.Generic.List[string]]::new()
+        $Seen = @{}
+        foreach ($Line in (Get-Content -LiteralPath $GameIniPath -Encoding UTF8)) {
+            $t = $Line.Trim()
+            $Hit = $null
+            foreach ($k in $LooseKeys) {
+                if ($t -match ('^' + [regex]::Escape($k) + '\s*=')) { $Hit = $k; break }
+            }
+            if ($Hit) {
+                if (-not $Seen.ContainsKey($Hit)) { $NewLines.Add("$Hit=False"); $Seen[$Hit] = $true }
+                continue
+            }
+            $NewLines.Add($Line)
+        }
+        # 找不到就不动手：宁可报错，也不要在 Zen 还开着的情况下打出一个空包
+        foreach ($k in $LooseKeys) {
+            if (-not $Seen.ContainsKey($k)) { throw "[服务器散件] DefaultGame.ini 里找不到 $k= 这一行，拒绝继续" }
+        }
+        [System.IO.File]::WriteAllLines($GameIniPath, $NewLines, (New-Object System.Text.UTF8Encoding($true)))
+        Write-Host '[服务器散件] 临时关掉 UsePakFile / bUseIoStore / bUseZenStore（打完自动还原）' -ForegroundColor Yellow
+
+        # 顺手清掉服务器自己那份 cooked：上次是 Zen 管线（盘上只有 Metadata，没有 .uasset），
+        # 增量 cook 会以为"已经 cook 过"从而跳过，这次照样出不来散件。
+        # 只删 WindowsServer 这一份，客人端的 Saved\Cooked\Windows 不动（客户端不用重 cook）。
+        $ServerCookedRoot = [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot 'Saved\Cooked'))
+        $ServerCooked = [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot 'Saved\Cooked\WindowsServer'))
+        if (-not $ServerCooked.StartsWith($ServerCookedRoot + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "[服务器散件] 拒绝删除不在 Saved\Cooked 下的路径：$ServerCooked"
+        }
+        if (Test-Path -LiteralPath $ServerCooked) {
+            Remove-Item -LiteralPath $ServerCooked -Recurse -Force
+            Write-Host "[服务器散件] 已清掉 $ServerCooked（管线换了，这一份必须全量重 cook）" -ForegroundColor Yellow
+        }
     }
 }
 
@@ -719,6 +990,40 @@ if (-not [string]::IsNullOrWhiteSpace($PlayerVersion)) {
     }
 }
 
+# ============================ 平台设置快照（防忘）============================
+# 打包和平台设置"分得比较开"，容易打完才想起来没改。这里在开工前过一遍目，
+# 同时落盘给分包报告和页面用（报告里会带上，方便以后查"这包是哪套设置打的"）。
+$PlatformSettings = Get-PlatformSettingsSnapshot -Root $ProjectRoot
+Show-PlatformSettings -S $PlatformSettings
+# （不另外落盘：报告的 settings 段已经记了同一批值 + 图标状态，避免造第二份真相）
+
+# ============================ Shipping 目标「要不要重编」============================
+# 之前只看收据在不在（Binaries\Win64\X-Win64-Shipping.target）。
+# 2026-09-19 就是这么翻车的：收据是 9/18 编的，DreamChunkDownloaderSubsystem.cpp 9/19 16:56 改过，
+# 脚本看到收据在 → 跳过编译 → 打出来的客户端里是【一天前的旧二进制】→ 双击直接崩。
+# 所以改成比时间戳：源码比 Shipping 二进制新就当"要重编"。
+# 只会多编一次（编完二进制就比源码新了），不会每次都重编。
+function Get-NewestProjectSource {
+    $newest = $null
+    $newestPath = ''
+    foreach ($root in @((Join-Path $ProjectRoot 'Source'), (Join-Path $ProjectRoot 'Plugins'))) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        $files = Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object {
+                # 只看人写的源码：排除中间产物 / 二进制 / 第三方编译输出
+                ($_.Extension -in '.cpp', '.h', '.cs', '.uplugin') -and
+                ($_.FullName -notmatch '\\Intermediate\\|\\Binaries\\|\\Saved\\')
+            }
+        foreach ($f in $files) {
+            if (($null -eq $newest) -or ($f.LastWriteTime -gt $newest)) {
+                $newest = $f.LastWriteTime
+                $newestPath = $f.FullName
+            }
+        }
+    }
+    return [pscustomobject]@{ Time = $newest; Path = $newestPath }
+}
+
 $AllOk = $true
 
 foreach ($Run in $RunList) {
@@ -735,9 +1040,40 @@ foreach ($Run in $RunList) {
     if ($Platform -eq 'Win64') {
         $ReceiptName = if ($PackTarget -eq 'Server') { 'CrossingVoidServer' } else { 'CrossingVoid' }
         $ReceiptPath = Join-Path $ProjectRoot "Binaries\Win64\$ReceiptName-Win64-Shipping.target"
+        $ShippingExe = Join-Path $ProjectRoot "Binaries\Win64\$ReceiptName-Win64-Shipping.exe"
+
+        # 判定：收据不存在 → 编；收据在但源码比二进制新 → 也编
+        $NeedCompile = $false
+        $WhyCompile  = ''
         if (-not (Test-Path -LiteralPath $ReceiptPath)) {
+            $NeedCompile = $true
+            $WhyCompile  = '收据不存在（这个目标从没编过）'
+        }
+        else {
+            $NewestSrc = Get-NewestProjectSource
+            $BinaryStamp = if (Test-Path -LiteralPath $ShippingExe) {
+                (Get-Item -LiteralPath $ShippingExe).LastWriteTime
+            }
+            else {
+                (Get-Item -LiteralPath $ReceiptPath).LastWriteTime
+            }
+            if ($NewestSrc.Time -and ($NewestSrc.Time -gt $BinaryStamp)) {
+                $NeedCompile = $true
+                $WhyCompile  = ('源码比 Shipping 二进制新：{0}（源码 {1:yyyy-MM-dd HH:mm:ss} / 二进制 {2:yyyy-MM-dd HH:mm:ss}）' -f (Split-Path $NewestSrc.Path -Leaf), $NewestSrc.Time, $BinaryStamp)
+            }
+        }
+        if ($ForceBuild) {
+            # -ForceBuild 时编译交给 UAT 那一轮（Build-UatArgs 会保留 -build），这里就不再单独编一遍
+            $NeedCompile = $false
+        }
+
+        if ($NeedCompile -and $DryRun) {
+            # DryRun 的语义是"只打印不真干"（见 Tools\打包说明.md），所以这里只报"本应编译"
+            Write-Host "[编译] (DryRun) 本应编译：$WhyCompile" -ForegroundColor Yellow
+        }
+        elseif ($NeedCompile) {
             Write-Host ''
-            Write-Host "[编译] $ReceiptName 的 Shipping 目标还没编过 —— 先单独编译它（只编这个目标，不会被 Live Coding 挡住）" -ForegroundColor Yellow
+            Write-Host "[编译] $WhyCompile —— 先单独编译 $ReceiptName 的 Shipping 目标（只编这个目标，不会被 Live Coding 挡住）" -ForegroundColor Yellow
             $BuildBat = Join-Path $EngineRoot 'Engine\Build\BatchFiles\Build.bat'
             $BuildArgs = @($ReceiptName, 'Win64', 'Shipping', "-Project=$ProjectFile", '-WaitMutex')
             # ---- 从源头不生成 pdb（两个开关必须一起给）----
@@ -759,11 +1095,69 @@ foreach ($Run in $RunList) {
             if (-not $KeepSymbols) { $BuildArgs += @('-NoDebugInfo', '-NoLinkerDebugInfo') }
             & $BuildBat @BuildArgs
             if ($LASTEXITCODE -ne 0) {
-                Write-Host "[编译] 失败，退出码 $LASTEXITCODE —— 后面的打包大概率也会失败" -ForegroundColor Red
+                # 编译没过就别往下走了：Shipping 二进制是旧的/不存在的，cook 会白跑十几分钟，
+                # 最后必然死在 stage「Missing receipt」上。这里直接跳过这一侧，脚本末尾的正常
+                # 收尾（还原 DefaultGame.ini）照常执行，整体以失败退出。
+                Write-Host "[编译] 失败，退出码 $LASTEXITCODE —— 跳过本目标的打包（先修编译错误）" -ForegroundColor Red
+                $AllOk = $false
+                continue
             }
             else {
                 Write-Host "[编译] 完成" -ForegroundColor Green
             }
+        }
+        else {
+            Write-Host ("[编译] {0} Shipping 目标是最新的，跳过编译" -f $ReceiptName) -ForegroundColor DarkGray
+        }
+    }
+    else {
+        # ---- 安卓：同理，Shipping 目标缺失时单独编它 ----
+        # 为什么必须单独编：打包一律带 -nocompile，UAT 不会替我们编译；
+        # 而第一次打安卓时 Binaries\Android 下根本没有产物，不先编出来必然失败。
+        $ReceiptName = if ($PackTarget -eq 'Server') { 'CrossingVoidServer' } else { 'CrossingVoid' }
+        $AndroidBin = Join-Path $ProjectRoot 'Binaries\Android'
+        $HasAndroidShipping = $false
+        if (Test-Path -LiteralPath $AndroidBin) {
+            $HasAndroidShipping = [bool](Get-ChildItem -LiteralPath $AndroidBin -Filter "$ReceiptName-Android*Shipping*.target" -ErrorAction SilentlyContinue |
+                Select-Object -First 1)
+        }
+        # 有的版本收据名不带平台后缀，兜一层
+        if (-not $HasAndroidShipping -and (Test-Path -LiteralPath $AndroidBin)) {
+            $HasAndroidShipping = [bool](Get-ChildItem -LiteralPath $AndroidBin -Filter '*Shipping*.target' -ErrorAction SilentlyContinue | Select-Object -First 1)
+        }
+        if (-not $HasAndroidShipping) {
+            Write-Host ''
+            Write-Host "[编译] $ReceiptName 的 Android Shipping 目标还没编过 —— 先单独编译它（第一次会比较久：arm64 + 引擎模块）" -ForegroundColor Yellow
+            $BuildBat = Join-Path $EngineRoot 'Engine\Build\BatchFiles\Build.bat'
+            & $BuildBat $ReceiptName Android Shipping "-Project=$ProjectFile" -WaitMutex
+            if ($LASTEXITCODE -ne 0) {
+                # 同上：编译没过就别去 cook 了，省十几分钟
+                Write-Host "[编译] 失败，退出码 $LASTEXITCODE —— 跳过本目标的打包（先修编译错误）" -ForegroundColor Red
+                $AllOk = $false
+                continue
+            }
+            else {
+                Write-Host "[编译] 完成" -ForegroundColor Green
+            }
+        }
+    }
+
+    # ---- 服务器：归档目录只留「这一版真正有的东西」----
+    # UAT 归档只复制、从不删（见 Clear-ArchiveExceptSaved 的注释），所以删掉的资源会一直留着。
+    # 放在【编译之后】是有意的：编译失败就别动上一版的发布目录。
+    # 铁律：任何 Saved 一律不碰 —— 那是服务器的玩家数据。
+    if ($Platform -eq 'Win64' -and $PackTarget -eq 'Server') {
+        # UAT 会自己在归档根下加平台子目录（DeploymentContext.cs:515），别重复加
+        $ServerArchiveDir = $Run.OutDir
+        if ((Split-Path -Leaf $ServerArchiveDir) -ne 'WindowsServer') {
+            $ServerArchiveDir = Join-Path $ServerArchiveDir 'WindowsServer'
+        }
+        if ($DryRun) {
+            Write-Host "[服务器散件] (DryRun) 本应清空 $ServerArchiveDir（Saved 除外）" -ForegroundColor Yellow
+        }
+        else {
+            $Cleaned = Clear-ArchiveExceptSaved -Path $ServerArchiveDir
+            Write-Host ("[服务器散件] 归档目录已清：删 {0} 项，保留 {1} 处 Saved —— {2}" -f $Cleaned.Removed, $Cleaned.KeptSaved, $ServerArchiveDir) -ForegroundColor Yellow
         }
     }
 
@@ -875,6 +1269,33 @@ foreach ($Run in $RunList) {
         }
         else {
             Write-Host '  （-KeepSymbols：保留 pdb，也不加 -NoLinkerDebugInfo）' -ForegroundColor DarkGray
+        }
+
+        # ---- PC 客户端：自检运行库安装器有没有被 stage 进来 ----
+        # 这两份不是我们手工拷的，靠官方开关：
+        #   · UAT 的 -prereqs（见上面拼参数那里）→ vc_redist.x64.exe / vc_redist.arm64.exe
+        #   · 项目 Config/DefaultEngine.ini 里的 [GameInput] IncludeRedistFiles=True
+        #     → GameInputRedist.msi
+        # 包根启动器启动前检查的就是它们：机器上缺 GameInput 时会弹"要现在安装吗"，
+        # 而要装的 msi 必须就在这个位置，否则弹窗会卡死在没桌面的会话里。
+        # 这里只做体检：没 stage 进来就明确报出来，别等玩家/服务器上才发现。
+        if ($Platform -eq 'Win64' -and $PackTarget -eq 'Client') {
+            $RedistDst = Join-Path $OutDir "$PlatformDir\Engine\Extras\Redist\en-us"
+            $RedistWant = @('GameInputRedist.msi', 'vc_redist.x64.exe')
+            $RedistMiss = @($RedistWant | Where-Object { -not (Test-Path -LiteralPath (Join-Path $RedistDst $_)) })
+
+            Write-Host ''
+            if ($RedistMiss.Count -eq 0) {
+                $RedistMB = [math]::Round((($RedistWant | ForEach-Object { (Get-Item -LiteralPath (Join-Path $RedistDst $_)).Length } | Measure-Object -Sum).Sum / 1MB), 1)
+                Write-Host ('  {0,-14} {1,10} MB  {2}' -f '运行库安装器', $RedistMB, ($RedistWant -join ' + ')) -ForegroundColor Green
+                Write-Host "                 $RedistDst" -ForegroundColor DarkGray
+            }
+            else {
+                Write-Host ('  [警告] 产物里缺运行库安装器：{0}' -f ($RedistMiss -join '、')) -ForegroundColor Yellow
+                Write-Host "         期望位置：$RedistDst" -ForegroundColor DarkGray
+                Write-Host '         检查：① 这次打包有没有带 -prereqs（Win64 客户端会自动带）' -ForegroundColor DarkGray
+                Write-Host '               ② Config/DefaultEngine.ini 里有没有 [GameInput] IncludeRedistFiles=True' -ForegroundColor DarkGray
+            }
         }
 
         if ($PackTarget -eq 'Server') {
@@ -1030,9 +1451,9 @@ Write-Host '========================================' -ForegroundColor Cyan
 Write-Host ''
 
 # 打包结束：把临时改写过的 DefaultGame.ini 还原回去（绝不留一个被改过的工程配置）
-if ($bMapsOverridden -and (Test-Path -LiteralPath $MapsBackupPath)) {
-    Move-Item -LiteralPath $MapsBackupPath -Destination $GameIniPath -Force
-    Write-Host '[地图] DefaultGame.ini 已还原' -ForegroundColor DarkGray
+if ($bGameIniOverridden -and (Test-Path -LiteralPath $GameIniBackupPath)) {
+    Move-Item -LiteralPath $GameIniBackupPath -Destination $GameIniPath -Force
+    Write-Host '[配置] DefaultGame.ini 已还原（地图清单 / 服务器散件开关）' -ForegroundColor DarkGray
     Remove-Item -LiteralPath (Join-Path $ProjectRoot 'Saved\PackLogs\maps-override.txt') -Force -ErrorAction SilentlyContinue   # 还原了就把标记清掉
 }
 

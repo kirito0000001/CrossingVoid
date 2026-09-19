@@ -86,22 +86,22 @@ UENUM(BlueprintType)
 enum class EDreamChunkStatus : uint8
 {
 	/** Chunk is fully mounted and ready for use */
-	Mounted UMETA(DisplayName = "Mounted"),
+	Mounted UMETA(DisplayName = "已挂载"),
 
 	/** Chunk is fully downloaded and cached locally */
-	Cached UMETA(DisplayName = "Cached"),
+	Cached UMETA(DisplayName = "已缓存"),
 
 	/** Chunk is currently being downloaded */
-	Downloading UMETA(DisplayName = "Downloading"),
+	Downloading UMETA(DisplayName = "下载中"),
 
 	/** Chunk has partial data downloaded */
-	Partial UMETA(DisplayName = "Partial"),
+	Partial UMETA(DisplayName = "部分下载"),
 
 	/** Chunk is available on CDN but not downloaded */
-	Remote UMETA(DisplayName = "Remote"),
+	Remote UMETA(DisplayName = "仅在远程"),
 
 	/** Chunk status is unknown */
-	Unknown UMETA(DisplayName = "Unknown")
+	Unknown UMETA(DisplayName = "未知")
 };
 
 /**
@@ -113,10 +113,10 @@ UENUM(BlueprintType)
 enum class EDreamChunkDownloaderCacheLocation : uint8
 {
 	/** Store in user-specific directory (e.g. Saved folder) */
-	User UMETA(DisplayName = "User"),
+	User UMETA(DisplayName = "用户目录（Saved）"),
 
 	/** Store in game installation directory */
-	Game UMETA(DisplayName = "Game"),
+	Game UMETA(DisplayName = "游戏安装目录"),
 };
 
 /**

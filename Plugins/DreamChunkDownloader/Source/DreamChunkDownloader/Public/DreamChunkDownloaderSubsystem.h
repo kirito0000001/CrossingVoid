@@ -69,6 +69,21 @@ public:
 	 */
 	virtual void Deinitialize() override;
 
+	/**
+	 * 总开关（项目设置里的「启用分片下载器（总开关）」，默认关闭）
+	 *
+	 * 关闭时：初始化不做任何清单/联网工作，StartPatchGame / UpdateBuild 直接失败返回，
+	 * 免得服务端在清单 404 上反复退避重试、把启动拖到几分钟。
+	 */
+	bool IsChunkDownloaderEnabled() const;
+
+	/**
+	 * 初始化是否真的走完过（目录、缓存路径都就绪）。
+	 * 总开关是运行时也能改的，运行中才打开时初始化已经跳过了，这时入口要拒绝执行，
+	 * 免得拿空路径去读写清单。
+	 */
+	bool bChunkDownloaderInitialized = false;
+
 public:
 	/**
 	 * Final cleanup of the subsystem - unmounts all chunks and cancels downloads

@@ -7,6 +7,7 @@
 #include "Widgets/SCompoundWidget.h"
 
 struct FCrossingChunkRule;
+class FCrossingChunkLogMarshaller;   // 日志着色（定义在 .cpp 里，照引擎 Output Log 的做法）
 
 /**
  * 《二游打包》页（第一版）：显示分块规则 + 改名。
@@ -44,6 +45,16 @@ public:
 		bool bChecked = false;
 	};
 
+	/**
+	 * Cook 进程数上限。
+	 * 引擎侧没这个限制（上限 254），卡在这里纯粹是因为【再高只会更慢】：
+	 * CookDirector 里 CoreLimit = 物理核数 / 进程数（整除），本机 8 核时
+	 * N=4 → 每进程 2 核；N≥5 直接掉到 1 核，再往上加只是多几个进程抢同一块 CPU，
+	 * 而且每个 worker 都是一整个 editor 进程。实测 N=5 比单进程慢 44%。
+	 * 换机器（物理核数变了）时，这个值要跟着重算。
+	 */
+	static constexpr int32 MaxCookProcessCount = 4;
+
 	SLATE_BEGIN_ARGS(SCrossingChunkPanel) {}
 	SLATE_END_ARGS()
 
@@ -80,15 +91,35 @@ private:
 	FText GetSummaryText() const;
 	FText GetPackButtonText() const;
 	FText GetMapSummaryText() const;
+	/** 「Cook 进程数」右边那行说明（单进程 / 多进程各写各的）。 */
+	FText GetCookProcessCountHint() const;
+
+	/**
+	 * 打包期间要不要让按钮 / 输入框可用。
+	 * 打包跑起来之后除了最上面那个「打包/停止打包」按钮（和下面的日志框）之外，
+	 * 其它控件一律灰掉 —— 打包中途改目标/改地图/改规则只会让这次打包的结果对不上。
+	 */
+	bool AreInputsEnabled() const { return !bPacking; }
 
 	/** 扫 AssetRegistry 里的 World 资产，重建地图勾选列表。 */
 	void ReloadMaps();
 	void RebuildMapList();
 	/** 勾选状态 → MapsCsv。 */
 	void UpdateMapsCsv();
+	/** MapsCsv → 勾选框（换目标时把另一个目标上次勾的图贴回来）。 */
+	void ApplyMapsCsvToChoices();
+	/** 「勾选地图」按目标分开存的键：Maps_Client / Maps_Server。 */
+	FString GetMapsSettingKey() const;
 
 	/** 每帧把子进程的输出捞出来贴到日志区；进程结束就刷新报告。 */
 	bool TickPump(float DeltaSeconds);
+	/**
+	 * 打包/清缓存跑完之后弹提示 + 播音效。
+	 * 复刻编辑器原版那一套（引擎 MainFrameModule.cpp:1113-1126 的 Compile Complete 流程）：
+	 *   · 音效是同两个 cue：/Engine/EditorSounds/Notifications/Compile{Success,Failed}_Cue
+	 *   · 提示是编辑器原生 toast（FSlateNotificationManager），成功绿勾、失败红叉
+	 */
+	void NotifyPackFinished(bool bSuccess);
 
 	/** 本次要跑的命令（也用于「复制命令」）。 */
 	FString BuildPackCommand() const;
@@ -145,11 +176,18 @@ private:
 	FString OutputDir;   // 产物目录（传给脚本的 -ArchiveDir）
 	FString MapsCsv;     // 选定地图（逗号分隔；空 = 用 DefaultGame.ini 的 +MapsToCook）
 	FString PlayerVersion;   // 给玩家看的版本号（打包时写进安卓 VersionDisplayName）
+	/**
+	 * Cook 进程数（脚本的 -CookProcessCount）。
+	 * 1 = 单进程 cook（引擎默认，最稳）；>1 = MPCook：1 个 director + (N-1) 个 cook worker。
+	 */
+	int32 CookProcessCount = 1;
 	// ---- 状态行（RefreshStatus 里填好，界面直接显示）----
 	FString StatusReportText;
 	FString StatusArtifactText;
 	FString StatusBaselineText;
 	FString StatusReleaseRoot;   // 基线根目录（脚本报上来的，界面直接用，别在代码里再写一遍）
+	FString StatusPlatformText;  // 平台设置一行摘要（包名/版本号/SDK/ABI/图标状态）
+	FString PlatformLogHeader;   // 显示在日志最上面的「当前平台设置」块
 	bool bBaselineExists = false;
 	TArray<TSharedPtr<FMapChoice>> MapChoices;
 	TSharedPtr<SVerticalBox> MapListBox;
@@ -158,6 +196,7 @@ private:
 	TSharedPtr<FCrossingChunkRule> UndoRule;
 	FString LogText;
 	TSharedPtr<SMultiLineEditableTextBox> LogBox;
+	TSharedPtr<FCrossingChunkLogMarshaller> LogMarshaller;
 	void* ReadPipe = nullptr;
 	void* WritePipe = nullptr;
 	FProcHandle ProcHandle;

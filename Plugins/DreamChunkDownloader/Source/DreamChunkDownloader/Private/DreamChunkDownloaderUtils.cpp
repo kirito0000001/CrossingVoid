@@ -174,7 +174,11 @@ TArray<FDreamPakFileEntry> FDreamChunkDownloaderUtils::ParseManifest(const FStri
 	// 设置输出JsonObject
 	OutJsonObject = Object;
 
-	for (const TPair<FString, TSharedPtr<FJsonValue>>& ValuePair : Object->Values)
+	// 注意：这里不能用 `const TPair<FString, ...>&` 接。UE5.8 的 FJsonObject::Values 的键是
+	// UE::TSharedString<char16_t>，绑个对 FString 的引用会构造一个临时对象，clang 直接按
+	// -Werror,-Wrange-loop-construct 报错（MSVC 不报，所以 Windows 能编过、安卓编不过）。
+	// 去掉引用显式按值构造，正是 clang 自己给的两种修法之一，循环体不用动。
+	for (const TPair<FString, TSharedPtr<FJsonValue>> ValuePair : Object->Values)
 	{
 		if (!ValuePair.Value.IsValid())
 		{

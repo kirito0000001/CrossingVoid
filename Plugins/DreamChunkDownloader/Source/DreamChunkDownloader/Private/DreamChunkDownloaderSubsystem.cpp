@@ -6,6 +6,10 @@
 #include "Http.h"
 #include "Engine/World.h"
 #include "HAL/FileManager.h"
+// ControlScreensaver 用到的 FPlatformApplicationMisc 在这里声明。
+// 必须显式包含：Windows(MSVC) 那边靠别处的包含链间接带进来了，所以能编过；
+// 安卓(clang) 不带，2026-09-19 就是这么炸的（use of undeclared identifier 'FPlatformApplicationMisc'）。
+#include "HAL/PlatformApplicationMisc.h"
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
 #include "Misc/CoreDelegates.h"
@@ -33,6 +37,12 @@ UDreamChunkDownloaderSubsystem::~UDreamChunkDownloaderSubsystem()
 	check(PakFiles.Num() <= 0);
 }
 
+bool UDreamChunkDownloaderSubsystem::IsChunkDownloaderEnabled() const
+{
+	const UDreamChunkDownloaderSettings* Settings = UDreamChunkDownloaderSettings::Get();
+	return Settings != nullptr && Settings->bEnableChunkDownloader;
+}
+
 void UDreamChunkDownloaderSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
@@ -46,6 +56,14 @@ void UDreamChunkDownloaderSubsystem::Initialize(FSubsystemCollectionBase& Collec
 	{
 		OnPatchCompleted.Broadcast(bSuccess);
 	});
+
+	// 总开关：关掉就什么都不做 —— 不读清单、不建目录、不联网。委托仍然挂好，
+	// 这样蓝图即使调了 StartPatchGame 也能收到"失败"回调，而不是一直等。
+	if (!IsChunkDownloaderEnabled())
+	{
+		DCD_LOG(Warning, TEXT("Chunk downloader is disabled by settings (bEnableChunkDownloader = false); skipping initialization."));
+		return;
+	}
 
 		PlatformName = FDreamChunkDownloaderUtils::GetTargetPlatformName();
 
@@ -71,6 +89,10 @@ void UDreamChunkDownloaderSubsystem::Initialize(FSubsystemCollectionBase& Collec
 	FString PackageEmbeddedDir = FPaths::Combine(PackageBaseDir, TEXT("Embedded"));
 
 	DCD_LOG(Log, TEXT("Initialize dirs : cache %s embedded %s"), *PackageCacheDir, *PackageEmbeddedDir);
+
+	// 目录/缓存路径就绪，从这里往后就算"已初始化"：运行中把总开关打开时，
+	// 入口是靠这个标记决定能不能干活，而不是重新跑一遍 Initialize。
+	bChunkDownloaderInitialized = true;
 
 	FPlatformMisc::AddAdditionalRootDirectory(PackageCacheDir);
 
@@ -529,6 +551,20 @@ bool UDreamChunkDownloaderSubsystem::LoadCachedBuild(const FString& DeploymentNa
 void UDreamChunkDownloaderSubsystem::UpdateBuild(const FString& InDeploymentName, const FString& InContentBuildId, const FDreamChunkDownloaderTypes::FDreamCallback OnCallback)
 {
 	check(!InContentBuildId.IsEmpty());
+
+	if (!IsChunkDownloaderEnabled())
+	{
+		DCD_LOG(Warning, TEXT("UpdateBuild ignored: chunk downloader is disabled by settings."));
+		ExecuteNextTick(OnCallback, false);
+		return;
+	}
+
+	if (!bChunkDownloaderInitialized)
+	{
+		DCD_LOG(Warning, TEXT("UpdateBuild ignored: chunk downloader was not initialized (settings were enabled after startup?)."));
+		ExecuteNextTick(OnCallback, false);
+		return;
+	}
 
 	// 验证CDN配置
 	SetContentBuildId(InDeploymentName, InContentBuildId);
@@ -1072,19 +1108,37 @@ void UDreamChunkDownloaderSubsystem::BeginLoadingMode(const FDreamChunkDownloade
 	LoadingCompleteLatch = 0;
 
 	// compute again next frame (if nothing's queued by then, we'll fire the callback
-	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([this](float dts)
+	// 同样必须用弱指针：这个是每帧轮询，会一直活到没回调为止，
+	// 编辑器关闭时它往往还在跑，用裸 this + IsValid(this) 必崩（见上面 TryLoadBuildManifest 的说明）
+	const TWeakObjectPtr<UDreamChunkDownloaderSubsystem> WeakSelfForLoad(this);
+	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakSelfForLoad](float dts)
 	{
-		if (!IsValid(this) || this->PostLoadCallbacks.Num() <= 0)
+		UDreamChunkDownloaderSubsystem* Self = WeakSelfForLoad.Get();
+		if (Self == nullptr || Self->PostLoadCallbacks.Num() <= 0)
 		{
 			return false; // stop ticking
 		}
-		return this->UpdateLoadingMode();
+		return Self->UpdateLoadingMode();
 	}));
 }
 
 bool UDreamChunkDownloaderSubsystem::StartPatchGame(int InManifestFileDownloadHostIndex)
 {
 	DCD_LOG(Log, TEXT("StartPatchGame requested with host index %d"), InManifestFileDownloadHostIndex);
+
+	if (!IsChunkDownloaderEnabled())
+	{
+		DCD_LOG(Warning, TEXT("StartPatchGame ignored: chunk downloader is disabled by settings."));
+		OnPatchCompletedInternal.Broadcast(false);
+		return false;
+	}
+
+	if (!bChunkDownloaderInitialized)
+	{
+		DCD_LOG(Warning, TEXT("StartPatchGame ignored: chunk downloader was not initialized (settings were enabled after startup?)."));
+		OnPatchCompletedInternal.Broadcast(false);
+		return false;
+	}
 
 	if (!bIsDownloadManifestUpToDate)
 	{
@@ -1627,6 +1681,15 @@ void UDreamChunkDownloaderSubsystem::LoadManifest(const TArray<FDreamPakFileEntr
 
 void UDreamChunkDownloaderSubsystem::TryLoadBuildManifest(int TryNumber)
 {
+	// 中途把总开关关掉时，正在跑的退避重试链也要停下来。
+	if (!IsChunkDownloaderEnabled())
+	{
+		DCD_LOG(Warning, TEXT("Manifest loading aborted: chunk downloader was disabled by settings."));
+		FDreamChunkDownloaderTypes::FDreamCallback Callback = MoveTemp(UpdateBuildCallback);
+		ExecuteNextTick(Callback, false);
+		return;
+	}
+
 	// load the local build manifest
 	TMap<FString, FString> CachedManifestProps;
 	TSharedPtr<FJsonObject> JsonObject;
@@ -1691,11 +1754,17 @@ void UDreamChunkDownloaderSubsystem::TryLoadBuildManifest(int TryNumber)
 	DCD_LOG(Log, TEXT("Will re-attempt manifest download in %f seconds (attempt %d/%d)"),
 	        SecondsToDelay, TryNumber + 1, MAX_MANIFEST_RETRIES);
 
-	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([this, TryNumber](float Unused)
+	// 注意：这里必须用【弱指针】而不是裸 this。
+	// 用 [this] + IsValid(this) 是不够的：对象销毁后 this 已是野指针，IsValid() 会去读
+	// 那块已释放内存里的对象索引，索引是垃圾值就触发
+	// "Assertion failed: Index >= 0 (UObjectArray.h:1083)" —— 编辑器关闭时必崩就是这么来的。
+	// 弱指针在对象销毁时会自动变空，Get() 不会碰到已释放的内存。
+	const TWeakObjectPtr<UDreamChunkDownloaderSubsystem> WeakSelfForRetry(this);
+	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakSelfForRetry, TryNumber](float Unused)
 	{
-		if (IsValid(this))
+		if (UDreamChunkDownloaderSubsystem* Self = WeakSelfForRetry.Get())
 		{
-			this->TryDownloadBuildManifest(TryNumber);
+			Self->TryDownloadBuildManifest(TryNumber);
 		}
 		return false;
 	}), SecondsToDelay);
@@ -1854,11 +1923,13 @@ void UDreamChunkDownloaderSubsystem::TryDownloadBuildManifest(int TryNumber)
 		ManifestRequest.Reset();
 
 		// 延迟重试
-		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([this, TryNumber](float)
+		// 同上：弱指针，别用裸 this（见上面 TryLoadBuildManifest 里的说明）
+		const TWeakObjectPtr<UDreamChunkDownloaderSubsystem> WeakSelfForRetry(this);
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakSelfForRetry, TryNumber](float)
 		{
-			if (IsValid(this))
+			if (UDreamChunkDownloaderSubsystem* Self = WeakSelfForRetry.Get())
 			{
-				TryLoadBuildManifest(TryNumber + 1);
+				Self->TryLoadBuildManifest(TryNumber + 1);
 			}
 			return false;
 		}), 1.0f);

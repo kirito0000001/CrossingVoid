@@ -19,8 +19,8 @@ void FDreamChunkDownloaderModule::StartupModule()
 			TEXT("Project"),
 			TEXT("DreamPlugin"),
 			TEXT("ChunkDownloaderSetting"),
-			LOCTEXT("Setting_DisplayName", "Dream Chunk Downloader Settings"),
-			LOCTEXT("Setting_Description", "Edit Chunk Downloader Setting"),
+			LOCTEXT("Setting_DisplayName", "梦想分片下载器设置（Dream Chunk Downloader）"),
+			LOCTEXT("Setting_Description", "分片（热更）的开关、清单、远程地址与缓存设置"),
 			UDreamChunkDownloaderSettings::Get());
 	}
 #endif

@@ -27,6 +27,7 @@ param(
     [ValidateSet('Quick', 'Base', 'Patch')][string]$Mode = 'Quick',
     [string]$PackLogPath = '',
     [string]$UatLogDir = 'D:\UnrealEngine-5.8.2\Engine\Programs\AutomationTool\Saved\Logs',
+    [string]$EngineRoot = 'D:\UnrealEngine-5.8.2',
     [switch]$WhatIf
 )
 $ErrorActionPreference = 'Stop'
@@ -352,6 +353,37 @@ if (-not [string]::IsNullOrWhiteSpace($PackLogPath) -and (Test-Path -LiteralPath
         ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value.Trim('"') } | Select-Object -Unique
     if ($mapHits) { $SettingsSnapshot['MapsToCookThisRun'] = ($mapHits -join ', ') }
 }
+
+# 图标：不是 ini 值，是文件约定（Windows 靠 Build\Windows\Application.ico，
+# 安卓靠 Build\Android\res\drawable*/icon.png）。"换了图标忘了放/忘了重打"
+# 是最容易发生的一种"打完才想起来"，所以也记进快照。
+$WinIconFile = Join-Path $ProjectRoot 'Build\Windows\Application.ico'
+$SettingsSnapshot['WindowsIconExists'] = [bool](Test-Path -LiteralPath $WinIconFile)
+if (Test-Path -LiteralPath $WinIconFile) {
+    $SettingsSnapshot['WindowsIconTime'] = (Get-Item -LiteralPath $WinIconFile).LastWriteTime.ToString('yyyy-MM-dd HH:mm')
+}
+$AndroidIconFiles = @(Get-ChildItem -LiteralPath (Join-Path $ProjectRoot 'Build\Android\res') -Recurse -Filter 'icon.png' -ErrorAction SilentlyContinue)
+$SettingsSnapshot['AndroidIconCount'] = $AndroidIconFiles.Count
+if ($AndroidIconFiles.Count -gt 0) {
+    $SettingsSnapshot['AndroidIconTime'] = ($AndroidIconFiles | Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1).LastWriteTime.ToString('yyyy-MM-dd HH:mm')
+}
+
+# 和引擎自带默认图标比 hash：一样就说明"还没换过"（比看大小/靠感觉可靠）
+$AndroidResDir = Join-Path $ProjectRoot 'Build\Android\res'
+$EngineAndroidResDir = Join-Path $EngineRoot 'Engine\Build\Android\Java\res'
+$IconCompared = 0
+$IconDefault = 0
+foreach ($icon in $AndroidIconFiles) {
+    $rel = $icon.FullName.Substring($AndroidResDir.Length).TrimStart('\')
+    $engineIcon = Join-Path $EngineAndroidResDir $rel
+    if (-not (Test-Path -LiteralPath $engineIcon)) { continue }
+    $IconCompared++
+    if ((Get-FileHash -LiteralPath $icon.FullName -Algorithm MD5).Hash -eq
+        (Get-FileHash -LiteralPath $engineIcon -Algorithm MD5).Hash) { $IconDefault++ }
+}
+$SettingsSnapshot['AndroidIconCompared'] = $IconCompared
+$SettingsSnapshot['AndroidIconDefaultCount'] = $IconDefault
 
 $Report = [ordered]@{
     schemaVersion  = 1

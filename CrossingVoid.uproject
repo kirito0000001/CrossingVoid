@@ -78,10 +78,6 @@
 			"Enabled": false
 		},
 		{
-			"Name": "DreamChunkDownloader",
-			"Enabled": true
-		},
-		{
 			"Name": "CrossingChunkEditor",
 			"Enabled": true
 		},

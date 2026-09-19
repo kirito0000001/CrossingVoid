@@ -3,9 +3,13 @@
 #include "ContentBrowserModule.h"
 #include "IContentBrowserSingleton.h"
 #include "AssetRegistry/IAssetRegistry.h"
+#include "Editor.h"                                          // GEditor->PlayEditorSound
+#include "Framework/Notifications/NotificationManager.h"     // FSlateNotificationManager / FNotificationInfo
+#include "Widgets/Notifications/SNotificationList.h"         // SNotificationItem
 #include "Widgets/Input/SCheckBox.h"
 #include "Containers/Ticker.h"
 #include "HAL/PlatformApplicationMisc.h"
+#include "HAL/PlatformMisc.h"
 #include "HAL/FileManager.h"
 #include "Modules/ModuleManager.h"
 #include "CrossingChunkEditorModule.h"
@@ -16,16 +20,101 @@
 #include "Misc/FileHelper.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/MessageDialog.h"
+#include "Widgets/Layout/SExpandableArea.h"
+#include "Framework/Text/BaseTextLayoutMarshaller.h"
+#include "Framework/Text/SlateTextRun.h"
+#include "Framework/Text/TextLayout.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Input/SSpinBox.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 
 #define LOCTEXT_NAMESPACE "CrossingChunkPanel"
+
+// ---------------------------------------------------------------------------
+// 日志着色：SMultiLineEditableTextBox + 自定义 marshaller。
+// 和引擎 Output Log 同一套做法（SOutputLog.cpp 的 FOutputLogTextLayoutMarshaller）：
+// 既能按行上色，又保留选中 / 复制。
+// ---------------------------------------------------------------------------
+class FCrossingChunkLogMarshaller : public FBaseTextLayoutMarshaller
+{
+public:
+	static TSharedRef<FCrossingChunkLogMarshaller> Create()
+	{
+		return MakeShareable(new FCrossingChunkLogMarshaller());
+	}
+
+	virtual ~FCrossingChunkLogMarshaller() = default;
+
+	// ITextLayoutMarshaller
+	virtual void SetText(const FString& SourceString, FTextLayout& TargetTextLayout) override
+	{
+		PlainText = SourceString;   // 复制日志时原样交回
+
+		TArray<FString> Lines;
+		SourceString.ParseIntoArrayLines(Lines, /*InCullEmpty=*/false);
+		if (Lines.Num() == 0) { Lines.Add(FString()); }
+
+		TArray<FTextLayout::FNewLineData> LinesToAdd;
+		LinesToAdd.Reserve(Lines.Num());
+		for (const FString& Line : Lines)
+		{
+			TSharedRef<FString> LineText = MakeShared<FString>(Line);
+			TArray<TSharedRef<IRun>> Runs;
+			Runs.Add(FSlateTextRun::Create(FRunInfo(), LineText, MakeStyleForLine(Line)));
+			// FNewLineData 在 5.8 要两个参数（Text + Runs）；Output Log 也是这么塞的
+			LinesToAdd.Emplace(MoveTemp(LineText), MoveTemp(Runs));
+		}
+
+		TargetTextLayout.ClearLines();
+		TargetTextLayout.AddLines(LinesToAdd);
+	}
+
+	virtual void GetText(FString& TargetString, const FTextLayout& SourceTextLayout) override
+	{
+		TargetString = PlainText;
+	}
+
+private:
+	FCrossingChunkLogMarshaller()
+	{
+		BaseStyle = FCoreStyle::Get().GetWidgetStyle<FTextBlockStyle>(TEXT("NormalText"));
+		BaseStyle.SetFont(FCoreStyle::GetDefaultFontStyle("Mono", 9));
+		BaseStyle.SetColorAndOpacity(FSlateColor(FLinearColor(0.78f, 0.80f, 0.84f)));
+	}
+
+	FTextBlockStyle MakeStyleForLine(const FString& Line) const
+	{
+		FTextBlockStyle Style = BaseStyle;
+		if (Line.Contains(TEXT("Error:")) || Line.Contains(TEXT("失败")) || Line.Contains(TEXT("错误"))
+			|| Line.Contains(TEXT("!!")) || Line.Contains(TEXT("Exception")))
+		{
+			Style.SetColorAndOpacity(FSlateColor(FLinearColor(1.00f, 0.42f, 0.40f)));   // 红
+		}
+		else if (Line.Contains(TEXT("Warning:")) || Line.Contains(TEXT("警告")))
+		{
+			Style.SetColorAndOpacity(FSlateColor(FLinearColor(1.00f, 0.84f, 0.35f)));   // 黄
+		}
+		else if (Line.Contains(TEXT("[OK]")) || Line.Contains(TEXT("成功")) || Line.Contains(TEXT("完成"))
+			|| Line.Contains(TEXT("已删除")))
+		{
+			Style.SetColorAndOpacity(FSlateColor(FLinearColor(0.55f, 0.90f, 0.55f)));   // 绿
+		}
+		else if (Line.Contains(TEXT("平台设置")) || Line.Contains(TEXT("[缓存]")) || Line.Contains(TEXT("基线")))
+		{
+			Style.SetColorAndOpacity(FSlateColor(FLinearColor(0.50f, 0.78f, 1.00f)));   // 青
+		}
+		return Style;
+	}
+
+	FString PlainText;
+	FTextBlockStyle BaseStyle;
+};
 
 void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 {
@@ -67,6 +156,9 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 	// 恢复上次的选项（页面关掉再打开、甚至重启编辑器都记得）
 	ApplySavedSettings();
 
+	// 日志着色器（按行上色 + 保留复制）
+	LogMarshaller = FCrossingChunkLogMarshaller::Create();
+
 	ChildSlot
 	[
 		SNew(SVerticalBox)
@@ -81,7 +173,7 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 			]
 			+ SHorizontalBox::Slot().AutoWidth().Padding(12.f, 0.f).VAlign(VAlign_Center)
 			[
-				SNew(SButton).Text(LOCTEXT("Refresh", "刷新")).OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnRefreshClicked))
+				SNew(SButton).Text(LOCTEXT("Refresh", "刷新")).IsEnabled_Lambda([this]() { return AreInputsEnabled(); }).OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnRefreshClicked))
 			]
 			+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center)
 			[
@@ -93,13 +185,24 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 				SNew(SComboBox<TSharedPtr<FChoice>>)
 				.OptionsSource(&TargetOptions)
 				.InitiallySelectedItem(SelectedTarget)
+				.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
 				.ToolTipText(LOCTEXT("TargetTip", "Windows=PC 客户端 / 安卓=安卓客户端 / 服务器=出散件（不分包，走 git）"))
 				.OnGenerateWidget_Lambda([](TSharedPtr<FChoice> Option) { return SNew(STextBlock).Text(FText::FromString(Option.IsValid() ? Option->Label : FString())); })
 				.OnSelectionChanged_Lambda([this](TSharedPtr<FChoice> Option, ESelectInfo::Type)
 				{
-					if (Option.IsValid())
+					if (Option.IsValid() && Option != SelectedTarget)
 					{
+						// 先把「旧目标」勾的地图存到它自己的键下（服务器和客户端要打的图不一样）
+						UpdateMapsCsv();
+						SaveSetting(*GetMapsSettingKey(), MapsCsv);
+
 						SelectedTarget = Option;
+
+						// 再把「新目标」上次勾的图读出来贴回勾选框
+						MapsCsv = LoadSetting(*GetMapsSettingKey());
+						ApplyMapsCsvToChoices();
+						RebuildMapList();
+
 						RefreshRules();   // 换目标 = 换一份报告，列表要跟着变
 						RefreshStatus();  // 状态行也是按目标的（报告/产物/基线各一份）
 						SaveSettings();
@@ -117,7 +220,8 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 				.IsEnabled_Lambda([this]()
 				{
 					// 服务器出散件、走 git，没有"版本/补丁"这一说 —— 直接禁掉，避免误选
-					return !(SelectedTarget.IsValid() && SelectedTarget->Target == TEXT("Server"));
+					// 另外：打包进行中一律灰掉（见 AreInputsEnabled）
+					return AreInputsEnabled() && !(SelectedTarget.IsValid() && SelectedTarget->Target == TEXT("Server"));
 				})
 				.ToolTipText(LOCTEXT("ModeTip", "快速验证 / 正式发布（建基线）/ 打补丁（基于已有基线算差异）"))
 				.OnGenerateWidget_Lambda([](TSharedPtr<FChoice> Option) { return SNew(STextBlock).Text(FText::FromString(Option.IsValid() ? Option->Label : FString())); })
@@ -145,25 +249,26 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 			]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(2.f, 0.f)
 			[
-				SNew(SButton).Text(LOCTEXT("CopyCmd", "复制命令")).OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnCopyCommandClicked))
+				SNew(SButton).Text(LOCTEXT("CopyCmd", "复制命令")).IsEnabled_Lambda([this]() { return AreInputsEnabled(); }).OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnCopyCommandClicked))
 			]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(2.f, 0.f)
 			[
 				SNew(SButton)
 				.Text(LOCTEXT("UndoDisband", "撤销解散"))
 				.ToolTipText(LOCTEXT("UndoDisbandTip", "把刚才解散掉的那个分块（连同它的目录）恢复回来"))
-				.IsEnabled_Lambda([this]() { return UndoRule.IsValid(); })
+				.IsEnabled_Lambda([this]() { return AreInputsEnabled() && UndoRule.IsValid(); })
 				.OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnUndoDisbandClicked))
 			]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(2.f, 0.f)
 			[
-				SNew(SButton).Text(LOCTEXT("OpenLog", "日志目录")).OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnOpenLogDirClicked))
+				SNew(SButton).Text(LOCTEXT("OpenLog", "日志目录")).IsEnabled_Lambda([this]() { return AreInputsEnabled(); }).OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnOpenLogDirClicked))
 			]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(2.f, 0.f)
 			[
 				SNew(SButton)
 				.Text(LOCTEXT("ClearCache", "清除缓存"))
 				.ToolTipText(LOCTEXT("ClearCacheTip", "删掉能再生的缓存（StagedBuilds / Cooked / Shaders）腾磁盘空间；不会动 Intermediate\\Build、Content、归档目录"))
+				.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
 				.OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnClearCacheClicked))
 			]
 		]
@@ -183,6 +288,7 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 					SNew(SEditableTextBox)
 					.Text_Lambda([this]() { return FText::FromString(OutputDir); })
 					.ToolTipText(LOCTEXT("OutDirTip", "打包产物落在这里（脚本的 -ArchiveDir）；Both 模式会在它下面分 Client/Server 子目录"))
+					.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
 					.SelectAllTextWhenFocused(true)
 					.OnTextCommitted_Lambda([this](const FText& NewText, ETextCommit::Type)
 					{
@@ -222,6 +328,7 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 					SNew(SEditableTextBox)
 					.Text_Lambda([this]() { return FText::FromString(PlayerVersion); })
 					.ToolTipText(LOCTEXT("PlayerVerTip", "给玩家看的版本号。打包时写进 Config\\DefaultEngine.ini 的 AndroidRuntimeSettings.VersionDisplayName（StoreVersion 不动）"))
+					.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
 					.SelectAllTextWhenFocused(true)
 					.OnTextCommitted_Lambda([this](const FText& NewText, ETextCommit::Type)
 					{
@@ -273,7 +380,56 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 			]
 		]
 
-		// ---- 分栏开始：左栏 = 地图选择 + chunk 表；右栏 = chunk 分配 + 日志 ----
+		// ---- 运行设置（可折叠，默认收起）：这类是"额外 / 运行期"的开关，不掺和打包参数 ----
+		+ SVerticalBox::Slot().AutoHeight().Padding(10.f, 4.f, 8.f, 0.f)
+		[
+			SNew(SExpandableArea)
+			.AreaTitle(LOCTEXT("RunSettings", "运行设置（额外）"))
+			// 这一条原来太矮、字太小（就一行 10 号字），折起来几乎点不到 —— 头部和正文都放大
+			.AreaTitleFont(FCoreStyle::GetDefaultFontStyle("Bold", 13))
+			.HeaderPadding(FMargin(6.f, 6.f))
+			.Padding(FMargin(6.f, 4.f))
+			.InitiallyCollapsed(true)
+			.BodyContent()
+			[
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot().AutoHeight().Padding(6.f, 6.f)
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("CookProcessCountLabel", "Cook 进程数"))
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
+					]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6.f, 0.f)
+					[
+						SNew(SBox).WidthOverride(84.f).MinDesiredHeight(26.f)
+						[
+							SNew(SSpinBox<int32>)
+							.MinValue(1)
+							.MaxValue(MaxCookProcessCount)
+							.Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
+							.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
+							.Value_Lambda([this]() { return CookProcessCount; })
+							.OnValueChanged_Lambda([this](int32 NewValue)
+							{
+								CookProcessCount = NewValue;
+								SaveSettings();
+							})
+						]
+					]
+					+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center)
+					[
+						SNew(STextBlock)
+						.Text_Lambda([this]() { return GetCookProcessCountHint(); })
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
+						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+					]
+				]
+			]
+		]
+
 		+ SVerticalBox::Slot().FillHeight(1.f)
 		[
 			SNew(SHorizontalBox)
@@ -295,6 +451,7 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 				[
 					SNew(SEditableTextBox)
 					.HintText(LOCTEXT("MapFilterHint", "搜索地图…"))
+					.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
 					.OnTextCommitted_Lambda([this](const FText& NewText, ETextCommit::Type)
 					{
 						MapFilter = NewText.ToString().TrimStartAndEnd();
@@ -304,7 +461,7 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 			]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(4.f, 0.f)
 			[
-				SNew(SButton).Text(LOCTEXT("MapReload", "重新扫描")).OnClicked(FOnClicked::CreateLambda([this]()
+				SNew(SButton).Text(LOCTEXT("MapReload", "重新扫描")).IsEnabled_Lambda([this]() { return AreInputsEnabled(); }).OnClicked(FOnClicked::CreateLambda([this]()
 				{
 					ReloadMaps();
 					return FReply::Handled();
@@ -312,7 +469,7 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 			]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(4.f, 0.f)
 			[
-				SNew(SButton).Text(LOCTEXT("MapClear", "全部不勾")).OnClicked(FOnClicked::CreateLambda([this]()
+				SNew(SButton).Text(LOCTEXT("MapClear", "全部不勾")).IsEnabled_Lambda([this]() { return AreInputsEnabled(); }).OnClicked(FOnClicked::CreateLambda([this]()
 				{
 					for (const TSharedPtr<FMapChoice>& C : MapChoices) { if (C.IsValid()) { C->bChecked = false; } }
 					UpdateMapsCsv();
@@ -405,6 +562,7 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 		[
 			SAssignNew(LogBox, SMultiLineEditableTextBox)
 			.Text(FText::FromString(LogText))
+			.Marshaller(LogMarshaller)
 			.IsReadOnly(true)
 			.AlwaysShowScrollbars(true)
 		]
@@ -503,21 +661,32 @@ void SCrossingChunkPanel::ReloadMaps()
 	});
 
 	// 按上次记下来的勾选恢复（地图清单是扫出来的，勾选状态得自己贴回去）
-	if (!MapsCsv.IsEmpty())
-	{
-		TArray<FString> Picked;
-		MapsCsv.ParseIntoArray(Picked, TEXT(","), true);
-		for (const TSharedPtr<FMapChoice>& Choice : MapChoices)
-		{
-			if (Choice.IsValid())
-			{
-				Choice->bChecked = Picked.Contains(Choice->PackagePath);
-			}
-		}
-	}
+	ApplyMapsCsvToChoices();
 
 	RebuildMapList();
 	UpdateMapsCsv();
+}
+
+void SCrossingChunkPanel::ApplyMapsCsvToChoices()
+{
+	TArray<FString> Picked;
+	MapsCsv.ParseIntoArray(Picked, TEXT(","), true);
+	for (const TSharedPtr<FMapChoice>& Choice : MapChoices)
+	{
+		if (Choice.IsValid())
+		{
+			Choice->bChecked = Picked.Contains(Choice->PackagePath);
+		}
+	}
+}
+
+// 服务器和客户端要打的图不一样，所以勾选单独存一份（Maps_Client / Maps_Server）。
+FString SCrossingChunkPanel::GetMapsSettingKey() const
+{
+	const FString Target = (SelectedTarget.IsValid() && !SelectedTarget->Target.IsEmpty())
+		? SelectedTarget->Target
+		: FString(TEXT("Client"));
+	return FString::Printf(TEXT("Maps_%s"), *Target);
 }
 
 void SCrossingChunkPanel::RebuildMapList()
@@ -543,6 +712,7 @@ void SCrossingChunkPanel::RebuildMapList()
 			[
 				SNew(SCheckBox)
 				.IsChecked_Lambda([Item]() { return Item->bChecked ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+				.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
 				.OnCheckStateChanged_Lambda([this, Item](ECheckBoxState NewState)
 				{
 					Item->bChecked = (NewState == ECheckBoxState::Checked);
@@ -590,6 +760,25 @@ FText SCrossingChunkPanel::GetMapSummaryText() const
 		return LOCTEXT("MapSummaryDefault", "一个都不勾 = 用 DefaultGame.ini 里 +MapsToCook 配置的地图");
 	}
 	return FText::FromString(FString::Printf(TEXT("本次只 cook：%s"), *MapsCsv));
+}
+
+FText SCrossingChunkPanel::GetCookProcessCountHint() const
+{
+	// 1 = 单进程（引擎默认）。>1 才是 MPCook，两条代价都来自 CookDirector 源码：
+	//   · CoreLimit = 物理核数 / 进程数（整除！）→ 本机 8 核时 N=4 每进程 2 核，N≥5 就掉到 1 核；
+	//   · 每个 worker 都是一整个 editor 进程，多进程下引擎还会关掉"低内存就 GC"的保护。
+	// 所以上限卡在 MaxCookProcessCount（实测 N=5 比单进程慢 44%），这里把切分结果直接写出来。
+	const int32 NumCores = FPlatformMisc::NumberOfCores();
+	const int32 NumThreads = FPlatformMisc::NumberOfCoresIncludingHyperthreads();
+	if (CookProcessCount <= 1)
+	{
+		return LOCTEXT("CookProcessHintSingle", "单进程 cook（引擎默认，最稳）");
+	}
+	const int32 CoresPerProc = FMath::Max(NumCores / CookProcessCount, 1);
+	const int32 ThreadsPerProc = FMath::Max(CoresPerProc * (NumCores > 0 ? NumThreads / NumCores : 1), 1);
+	return FText::FromString(FString::Printf(
+		TEXT("多进程 cook：1 director + %d worker；本机 %d 核/%d 线程 → 每进程 %d 核 %d 线程，合计 %d 线程（每个 worker 都是一整个编辑器进程，很吃内存）"),
+		CookProcessCount - 1, NumCores, NumThreads, CoresPerProc, ThreadsPerProc, ThreadsPerProc * CookProcessCount));
 }
 
 void SCrossingChunkPanel::LoadReport()
@@ -680,6 +869,7 @@ TSharedRef<SWidget> SCrossingChunkPanel::MakeChunkRow(TSharedPtr<FCrossingChunkR
 			[
 				SNew(SEditableTextBox)
 				.Text(FText::FromString(Rule->ChunkName))
+				.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
 				.SelectAllTextWhenFocused(true)
 				.OnTextCommitted(FOnTextCommitted::CreateSP(this, &SCrossingChunkPanel::OnNameCommitted, ChunkId))
 			]
@@ -734,6 +924,7 @@ TSharedRef<SWidget> SCrossingChunkPanel::MakeChunkRow(TSharedPtr<FCrossingChunkR
 			SNew(SButton)
 			.Text(LOCTEXT("Disband", "解散"))
 			.ToolTipText(LOCTEXT("DisbandTip", "解散这个分块：删掉这条规则，它下面的目录会重新变成未归类（顶部「撤销解散」可以恢复）"))
+			.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
 			.OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnDisbandClicked, ChunkId))
 		];
 }
@@ -790,6 +981,7 @@ TSharedRef<SWidget> SCrossingChunkPanel::MakeUnclassRow(TSharedPtr<FUnclassFolde
 			// 所以刷新推迟到下一帧（并用 WeakSelf 防止面板已关时访问野指针）。
 			SNew(SComboBox<TSharedPtr<FCrossingChunkRule>>)
 			.OptionsSource(&Rows)
+			.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
 			.ToolTipText(LOCTEXT("AssignTip", "把这个目录划给某个分块（相当于在内容浏览器里右键它）"))
 			.OnGenerateWidget_Lambda([](TSharedPtr<FCrossingChunkRule> Option)
 			{
@@ -828,12 +1020,32 @@ TSharedRef<SWidget> SCrossingChunkPanel::MakeUnclassRow(TSharedPtr<FUnclassFolde
 			SNew(SButton)
 			.Text(LOCTEXT("Locate", "定位"))
 			.ToolTipText(LOCTEXT("LocateTip", "在内容浏览器里选中这个目录，方便右键归类"))
+			.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
 			.OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnLocateClicked, Folder))
 		];
 }
 
 FReply SCrossingChunkPanel::OnDisbandClicked(int32 ChunkId)
 {
+	// 二次确认：解散会直接改写规则文件（打包读的就是它），所以先问一句。
+	// 提示里把「可以撤回」写清楚 —— 就算手滑点错，也还有第二条退路。
+	FString ChunkName;
+	for (const TSharedPtr<FCrossingChunkRule>& Row : Rows)
+	{
+		if (Row.IsValid() && Row->ChunkId == ChunkId) { ChunkName = Row->ChunkName; break; }
+	}
+	const EAppReturnType::Type Answer = FMessageDialog::Open(EAppMsgType::OkCancel, FText::FromString(FString::Printf(
+		TEXT("确定解散分块 %d「%s」吗？\n\n")
+		TEXT("· 它的目录会重新变成「未归类」\n")
+		TEXT("· 规则文件会立刻改写（下次打包按新的来）\n\n")
+		TEXT("点错了也别慌：顶部工具条右边的《撤销解散》，能把它连同目录一起恢复。"),
+		ChunkId, *ChunkName)));
+	if (Answer != EAppReturnType::Ok)
+	{
+		StatusMessage = TEXT("已取消解散");
+		return FReply::Handled();
+	}
+
 	FCrossingChunkRule Removed;
 	FString Message;
 	if (FCrossingChunkRuleService::RemoveChunk(ChunkId, Removed, Message))
@@ -923,6 +1135,11 @@ FString SCrossingChunkPanel::BuildExtraArgs() const
 	if (!PlayerVersion.IsEmpty())
 	{
 		Extra += FString::Printf(TEXT(" -PlayerVersion \\\"%s\\\""), *PlayerVersion);
+	}
+	// 1 = 单进程，等价于不加参数（脚本默认值就是 1），所以这里只在 >1 时才拼
+	if (CookProcessCount > 1)
+	{
+		Extra += FString::Printf(TEXT(" -CookProcessCount %d"), CookProcessCount);
 	}
 	return Extra;
 }
@@ -1020,6 +1237,10 @@ void SCrossingChunkPanel::RefreshStatus()
 	StatusBaselineText = TEXT("基线：—");
 	bBaselineExists = false;
 
+	// 服务器目标是「散件走 git」：不写分包报告、也不建基线。这两格对它是"不适用"，
+	// 不是"丢失" —— 文案要写清楚，否则每次切到服务器都会以为数据被删了（2026-09-20）。
+	const bool bServerTarget = SelectedTarget.IsValid() && SelectedTarget->Target == TEXT("Server");
+
 	// 状态由脚本写成一个小 json（不去解析 stdout：那东西会随终端宽度换行）
 	const FString StatusPath = FPaths::ConvertRelativePathToFull(
 		FPaths::ProjectSavedDir() / TEXT("PackLogs/pack-status.json"));
@@ -1062,6 +1283,10 @@ void SCrossingChunkPanel::RefreshStatus()
 		if (RepTime.Len() >= 16) { RepTime = RepTime.Mid(5, 5) + TEXT(" ") + RepTime.Mid(11, 5); }
 		StatusReportText = FString::Printf(TEXT("报告：%s · %s"), *RepTime, *ModeLabel(RepMode));
 	}
+	else if (bServerTarget)
+	{
+		StatusReportText = TEXT("报告：不适用（服务器散件走 git，不分包）");
+	}
 	else
 	{
 		StatusReportText = TEXT("报告：还没有（还没打包过）");
@@ -1083,7 +1308,11 @@ void SCrossingChunkPanel::RefreshStatus()
 	if (!RelRoot.IsEmpty()) { StatusReleaseRoot = RelRoot; }
 	Root->TryGetBoolField(TEXT("baselineExists"), bBaselineExists);
 	const FString BaselineVer = GetReleaseVersion();
-	if (BaselineVer.IsEmpty())
+	if (bServerTarget)
+	{
+		StatusBaselineText = TEXT("基线：不适用（服务器不分包，不建基线）");
+	}
+	else if (BaselineVer.IsEmpty())
 	{
 		StatusBaselineText = TEXT("基线：先填玩家版本");
 	}
@@ -1094,6 +1323,81 @@ void SCrossingChunkPanel::RefreshStatus()
 	else
 	{
 		StatusBaselineText = FString::Printf(TEXT("基线：%s 还没建"), *BaselineVer);
+	}
+
+	// 平台设置（防忘）：包名 / 版本号 / SDK / ABI / 图标状态
+	const TSharedPtr<FJsonObject>* PS = nullptr;
+	if (Root->TryGetObjectField(TEXT("platformSettings"), PS) && PS && (*PS).IsValid())
+	{
+		FString AVer, AName, ASdkMin, ASdkMax, AArm64, AStore;
+		const TSharedPtr<FJsonObject>* A = nullptr;
+		if ((*PS)->TryGetObjectField(TEXT("android"), A) && A && (*A).IsValid())
+		{
+			(*A)->TryGetStringField(TEXT("VersionDisplayName"), AVer);
+			(*A)->TryGetStringField(TEXT("PackageName"), AName);
+			(*A)->TryGetStringField(TEXT("MinSDKVersion"), ASdkMin);
+			(*A)->TryGetStringField(TEXT("TargetSDKVersion"), ASdkMax);
+			(*A)->TryGetStringField(TEXT("bBuildForArm64"), AArm64);
+			(*A)->TryGetStringField(TEXT("StoreVersion"), AStore);
+		}
+
+		int32 AIconCount = 0;
+		int32 AIconCompared = 0;
+		int32 AIconDefault = 0;
+		FString AIconTime;
+		const TSharedPtr<FJsonObject>* AI = nullptr;
+		if ((*PS)->TryGetObjectField(TEXT("androidIcons"), AI) && AI && (*AI).IsValid())
+		{
+			(*AI)->TryGetNumberField(TEXT("count"), AIconCount);
+			(*AI)->TryGetStringField(TEXT("lastWrite"), AIconTime);
+			(*AI)->TryGetNumberField(TEXT("compared"), AIconCompared);
+			(*AI)->TryGetNumberField(TEXT("defaultCount"), AIconDefault);
+		}
+
+		bool bWinIcon = false;
+		FString WinIconTime;
+		const TSharedPtr<FJsonObject>* WI = nullptr;
+		if ((*PS)->TryGetObjectField(TEXT("windowsIcon"), WI) && WI && (*WI).IsValid())
+		{
+			(*WI)->TryGetBoolField(TEXT("exists"), bWinIcon);
+			(*WI)->TryGetStringField(TEXT("lastWrite"), WinIconTime);
+		}
+
+		// 别在 Printf 里塞临时对象（*FString::Printf(...) 会踩到悬垂指针），先落到局部变量
+		const FString WinIconText = bWinIcon
+			? FString::Printf(TEXT("Windows 图标 %s"), *WinIconTime)
+			: FString(TEXT("[警告] Windows 图标没有 → 把 .ico 放到 Build\\Windows\\Application.ico（这项没有界面设置）"));
+
+		StatusPlatformText = FString::Printf(
+			TEXT("平台设置  安卓 %s（商店号 %s）· %s · SDK %s/%s%s · 图标 %d 张（%s）   ｜   %s"),
+			*AVer, *AStore, *AName, *ASdkMin, *ASdkMax,
+			(AArm64 == TEXT("True") ? TEXT(" · arm64") : TEXT("")),
+			AIconCount, *AIconTime, *WinIconText);
+
+		// 安卓图标是不是还是引擎默认（脚本按 hash 比出来的，不靠感觉）
+		const FString AIconText = (AIconCompared > 0 && AIconDefault == AIconCompared)
+			? FString::Printf(TEXT("[警告] 图标 %d 张全是引擎默认 → 去「项目设置 → 平台 → Android → 图标」换"), AIconCount)
+			: (AIconDefault > 0
+				? FString::Printf(TEXT("[警告] 图标有 %d/%d 张还是引擎默认 → 去「项目设置 → 平台 → Android → 图标」换"), AIconDefault, AIconCompared)
+				: FString::Printf(TEXT("图标 %d 张（%s）"), AIconCount, *AIconTime));
+
+		// 日志区最上面那份"打包前过目"的设置块（页面打开时写一次；每次打包开始时重写）
+		PlatformLogHeader = FString::Printf(
+			TEXT("===== 当前平台设置（打包前过目一遍）=====\n")
+			TEXT("  安卓   版本 %s（商店号 %s）· %s\n")
+			TEXT("         SDK %s/%s%s · %s\n")
+			TEXT("  %s\n")
+			TEXT("  （图标放这里：Build\\Windows\\Application.ico 与 Build\\Android\\res\\drawable*/icon.png）\n\n"),
+			*AVer, *AStore, *AName, *ASdkMin, *ASdkMax,
+			(AArm64 == TEXT("True") ? TEXT(" · arm64") : TEXT("")),
+			*AIconText, *WinIconText);
+
+		// 页面刚打开、日志还是空的时候，把它顶上去（刷新时不覆盖已有日志）
+		if (LogText.IsEmpty() && !PlatformLogHeader.IsEmpty() && LogBox.IsValid())
+		{
+			LogText = PlatformLogHeader;
+			LogBox->SetText(FText::FromString(LogText));
+		}
 	}
 }
 
@@ -1170,6 +1474,13 @@ FReply SCrossingChunkPanel::OnClearCacheClicked()
 FReply SCrossingChunkPanel::OnPackClicked()
 {
 	SaveSettings();   // 打包前把当前选项记下来（下次打开就是这套）
+
+	// 每次打包开始都把"当前平台设置"重新顶到日志最上面 —— 这就是防忘那一下
+	if (!PlatformLogHeader.IsEmpty())
+	{
+		LogText = PlatformLogHeader;
+		if (LogBox.IsValid()) { LogBox->SetText(FText::FromString(LogText)); }
+	}
 	if (ProcHandle.IsValid() && FPlatformProcess::IsProcRunning(ProcHandle))
 	{
 		// 再点一次 = 中止（比如刚发现输出目录填错了，不用干等它跑完）
@@ -1343,8 +1654,13 @@ void SCrossingChunkPanel::ApplySavedSettings()
 		OutputDir = SavedOutputDir;
 	}
 
-	// 勾选的地图：先记下来，ReloadMaps() 扫描完之后按这份清单恢复勾选
-	const FString SavedMaps = LoadSetting(TEXT("Maps"));
+	// 勾选的地图：先记下来，ReloadMaps() 扫描完之后按这份清单恢复勾选。
+	// 按目标分开存（服务器打的图跟客户端不一样）；旧的单键 "Maps" 当兜底，只有第一次会用到。
+	FString SavedMaps = LoadSetting(*GetMapsSettingKey());
+	if (SavedMaps.IsEmpty())
+	{
+		SavedMaps = LoadSetting(TEXT("Maps"));
+	}
 	if (!SavedMaps.IsEmpty())
 	{
 		MapsCsv = SavedMaps;
@@ -1361,6 +1677,16 @@ void SCrossingChunkPanel::ApplySavedSettings()
 			PlayerVersion = IniVersion;
 		}
 	}
+
+	// Cook 进程数：没存过就是 1（单进程），和脚本的默认值对齐
+	const FString SavedCookProcessCount = LoadSetting(TEXT("CookProcessCount"));
+	if (!SavedCookProcessCount.IsEmpty())
+	{
+		const int32 Parsed = FCString::Atoi(*SavedCookProcessCount);
+		// 上限跟着 MaxCookProcessCount 走：以前存过 5 的话，这里会被夹回 4
+		CookProcessCount = FMath::Clamp(Parsed, 1, MaxCookProcessCount);
+	}
+
 }
 
 void SCrossingChunkPanel::SaveSettings()
@@ -1368,8 +1694,9 @@ void SCrossingChunkPanel::SaveSettings()
 	SaveSetting(TEXT("Target"), SelectedTarget.IsValid() ? SelectedTarget->Label : TEXT(""));
 	SaveSetting(TEXT("Mode"), SelectedMode.IsValid() ? SelectedMode->Value : TEXT(""));
 	SaveSetting(TEXT("OutputDir"), OutputDir);
-	SaveSetting(TEXT("Maps"), MapsCsv);
+	SaveSetting(*GetMapsSettingKey(), MapsCsv);   // 勾选的地图按目标分开记
 	SaveSetting(TEXT("PlayerVersion"), PlayerVersion);
+	SaveSetting(TEXT("CookProcessCount"), FString::FromInt(CookProcessCount));
 }
 
 bool SCrossingChunkPanel::TickPump(float DeltaSeconds)
@@ -1421,7 +1748,45 @@ bool SCrossingChunkPanel::TickPump(float DeltaSeconds)
 	TickerHandle.Reset();
 	RefreshRules();   // 报告是脚本刚产出的，重新读一遍
 	RefreshStatus();  // 产物 / 基线的状态也跟着变
+
+	// 跑完了给个动静：原版那声提示音 + 原生 toast（清缓存是顺手操作，不吵人）
+	if (!bWasClearCache)
+	{
+		NotifyPackFinished(ReturnCode == 0);
+	}
 	return false;
+}
+
+void SCrossingChunkPanel::NotifyPackFinished(bool bSuccess)
+{
+	// 音效：和编辑器自己「编译成功 / 编译失败」播的是同两个 cue
+	// （引擎就是这么干的：MainFrameModule.cpp 里 CompileSuccess_Cue / CompileFailed_Cue）
+	if (GEditor)
+	{
+		GEditor->PlayEditorSound(bSuccess
+			? TEXT("/Engine/EditorSounds/Notifications/CompileSuccess_Cue.CompileSuccess_Cue")
+			: TEXT("/Engine/EditorSounds/Notifications/CompileFailed_Cue.CompileFailed_Cue"));
+	}
+
+	// 提示：编辑器原生 toast —— 成功绿勾、失败红叉，右下角弹出来，点标题下的链接能直接开日志目录
+	FNotificationInfo Info(bSuccess
+		? LOCTEXT("PackSucceededTitle", "打包成功")
+		: LOCTEXT("PackFailedTitle", "打包失败"));
+	Info.bUseSuccessFailIcons = true;
+	Info.ExpireDuration = bSuccess ? 6.0f : 12.0f;
+	Info.SubText = bSuccess
+		? LOCTEXT("PackSucceededSub", "产物和分包报告都刷新好了")
+		: LOCTEXT("PackFailedSub", "看日志找原因（面板下面的日志区 / 日志目录）");
+	Info.Hyperlink = FSimpleDelegate::CreateLambda([]()
+	{
+		FPlatformProcess::ExploreFolder(*(FPaths::ProjectSavedDir() / TEXT("PackLogs")));
+	});
+	Info.HyperlinkText = LOCTEXT("PackNotifyOpenLogs", "打开日志目录");
+
+	if (TSharedPtr<SNotificationItem> Item = FSlateNotificationManager::Get().AddNotification(Info))
+	{
+		Item->SetCompletionState(bSuccess ? SNotificationItem::CS_Success : SNotificationItem::CS_Fail);
+	}
 }
 
 FReply SCrossingChunkPanel::OnCopyCommandClicked()
