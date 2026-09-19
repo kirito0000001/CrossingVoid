@@ -59,7 +59,7 @@ void AMusicPlayerC::PlayBGM(USoundWave* Wave, bool SyncSwitch)
 			}
 			else //创建一个音频计时器
 			{
-				AudioTimerHandle = UKismetSystemLibrary::K2_SetTimer(this, FName("RecordBGMTime"), MusicLerpAccuracy,
+				AudioTimerHandle = UKismetSystemLibrary::K2_SetTimer(this, FString("RecordBGMTime"), MusicLerpAccuracy,
 				                                                     true, false, 0, 0);
 			}
 			Is2 = !Is2; //切换组件
@@ -122,7 +122,7 @@ void AMusicPlayerC::SwitchBGM(int Index, bool SyncSwitch)
 			}
 			else //创建一个音频计时器
 			{
-				AudioTimerHandle = UKismetSystemLibrary::K2_SetTimer(this, FName("RecordBGMTime"), MusicLerpAccuracy,
+				AudioTimerHandle = UKismetSystemLibrary::K2_SetTimer(this, FString("RecordBGMTime"), MusicLerpAccuracy,
 				                                                     true, false, 0, 0);
 			}
 			Is2 = !Is2; //切换组件

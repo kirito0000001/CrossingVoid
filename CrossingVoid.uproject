@@ -1,6 +1,6 @@
 {
 	"FileVersion": 3,
-	"EngineAssociation": "{486FC676-41CB-DA5E-D95C-8AA1D8EB76B0}",
+	"EngineAssociation": "{3AAA80DF-47C5-B2AA-3115-6B8F0BFEA918}",
 	"Category": "",
 	"Description": "",
 	"Modules": [
@@ -79,7 +79,11 @@
 		},
 		{
 			"Name": "DreamChunkDownloader",
-			"Enabled": false
+			"Enabled": true
+		},
+		{
+			"Name": "CrossingChunkEditor",
+			"Enabled": true
 		},
 		{
 			"Name": "CommonLoadingScreen",

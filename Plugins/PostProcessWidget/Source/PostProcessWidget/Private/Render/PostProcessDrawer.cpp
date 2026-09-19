@@ -169,7 +169,11 @@ struct FSlateClippingCreateContext
 	ESlateClippingStencilAction StencilAction = ESlateClippingStencilAction::None;
 };
 
-const FSlateClippingOp* CreateSlateClipping(FRDGBuilder& GraphBuilder, const FVector2f ElementsOffset, const FSlateClippingState* ClippingState, FSlateClippingCreateContext& Context)
+// UE 5.8 中引擎 SlateRHIRenderer 模块已导出同名全局符号 CreateSlateClipping，
+// 与本文件此前的定义冲突（LNK2005 / LNK1169 多重定义）。
+// 此函数仅在本文件内使用（唯一调用点在下方 Draw_RenderThread），
+// 因此加 static 转为内部链接，不再参与全局符号表。
+static const FSlateClippingOp* CreateSlateClipping(FRDGBuilder& GraphBuilder, const FVector2f ElementsOffset, const FSlateClippingState* ClippingState, FSlateClippingCreateContext& Context)
 {
 	Context.StencilAction = ESlateClippingStencilAction::None;
 

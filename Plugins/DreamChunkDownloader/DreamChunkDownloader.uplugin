@@ -9,15 +9,16 @@
 	"CreatedByURL": "https://github.com/TypeDreamMoon",
 	"DocsURL": "https://github.com/TypeDreamMoon/DreamChunkDownloader",
 	"MarketplaceURL": "",
-	"SupportURL": "https://github.com/TypeDreamMoon/DreamChunkDownloader/issues",
-	"EngineVersion": "5.6.0",
 	"CanContainContent": true,
-	"Installed": true,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
 	"Modules": [
 		{
 			"Name": "DreamChunkDownloader",
 			"Type": "Runtime",
 			"LoadingPhase": "Default"
 		}
-	]
+	],
+	"SupportURL": "https://github.com/TypeDreamMoon/DreamChunkDownloader/issues"
 }

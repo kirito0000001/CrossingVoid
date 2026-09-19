@@ -1,0 +1,36 @@
+﻿{
+  "desc": [
+    "This is a BuildManifest-Platform template file",
+    "This file must contain the following fields:",
+    "build-id",
+    "entries-count",
+    "entries",
+    "-opt- download-chunk-id-list",
+    "-opt- client-build-id",
+    "Entries are structured as follows:",
+    "file-name file-size file-version chunk-id relative-url",
+    "enjoy it."
+  ],
+  "build-id": "1.0.0.0",
+  "entries-count": 5,
+  "entries": [
+    {
+      "file-name": "pakchunk100-Windows.pak",
+      "file-size": 114514,
+      "file-version": "1.0.0.0",
+      "chunk-id": 100,
+      "relative-url": "Windows/pakchunk100-Windows.pak"
+    },
+    {
+      "file-name": "pakchunk101-Windows.pak",
+      "file-size": 114514,
+      "file-version": "1.0.0.0",
+      "chunk-id": 101,
+      "relative-url": "Windows/pakchunk101-Windows.pak"
+    }
+  ],
+  "download-chunk-id-list":[
+    100,
+    101
+  ]
+}

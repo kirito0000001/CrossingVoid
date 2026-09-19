@@ -430,7 +430,7 @@ void ACrossvoid2DatkNew::CameraShow(FVector LocOffset, FRotator RotOffset, float
 	}
 	else//创建计时器
 	{
-		CameraLerpTimer = UKismetSystemLibrary::K2_SetTimer(this,FName("CameraShowLerp"),0.01,true,false,0,0);
+		CameraLerpTimer = UKismetSystemLibrary::K2_SetTimer(this,FString("CameraShowLerp"),0.01,true,false,0,0);
 	}
 }
 

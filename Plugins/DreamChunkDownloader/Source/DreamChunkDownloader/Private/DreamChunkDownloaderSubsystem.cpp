@@ -1055,9 +1055,9 @@ void UDreamChunkDownloaderSubsystem::BeginLoadingMode(const FDreamChunkDownloade
 
 	// start loading mode
 	DCD_LOG(Log, TEXT("BeginLoadingMode"));
-// #if PLATFORM_ANDROID || PLATFORM_IOS
-// 	FPlatformApplicationMisc::ControlScreensaver(FPlatformApplicationMisc::Disable);
-// #endif
+#if PLATFORM_ANDROID || PLATFORM_IOS
+	FPlatformApplicationMisc::ControlScreensaver(FPlatformApplicationMisc::Disable);
+#endif
 
 	// reset stats
 	LoadingModeStats.LastError = FText();
@@ -2000,9 +2000,9 @@ bool UDreamChunkDownloaderSubsystem::UpdateLoadingMode()
 		{
 			// end loading mode
 			DCD_LOG(Log, TEXT("EndLoadingMode (%d files downloaded, %d chunks mounted)"), LoadingModeStats.FilesDownloaded, LoadingModeStats.ChunksMounted);
-// #if PLATFORM_ANDROID || PLATFORM_IOS
-// 			FPlatformApplicationMisc::ControlScreensaver(FPlatformApplicationMisc::Enable);
-// #endif
+#if PLATFORM_ANDROID || PLATFORM_IOS
+			FPlatformApplicationMisc::ControlScreensaver(FPlatformApplicationMisc::Enable);
+#endif
 
 			// fire any loading mode completion callbacks
 			TArray<FDreamChunkDownloaderTypes::FDreamCallback> Callbacks = MoveTemp(PostLoadCallbacks);
