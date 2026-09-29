@@ -150,7 +150,8 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 	AddMode(TEXT("快速验证（只测试：不产发布包）"), TEXT("Quick"));
 	SelectedMode = ModeOptions[0];
 
-	OutputDir = TEXT("D:\\Build\\CrossingVoid");   // 和脚本默认值一致
+	OutputDir = TEXT("F:\\DaBaoV\\Crossingvoid");              // 和脚本 -ArchiveDir 的默认值一致
+	ReleaseRoot = TEXT("F:\\DaBaoV\\Crossingvoid\\Release");   // 和脚本 -ReleaseRoot 的默认值一致
 	MapsCsv.Empty();
 
 	// 恢复上次的选项（页面关掉再打开、甚至重启编辑器都记得）
@@ -179,7 +180,7 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 			[
 				SNew(STextBlock).Text(this, &SCrossingChunkPanel::GetSummaryText).AutoWrapText(true).ColorAndOpacity(FSlateColor::UseSubduedForeground())
 			]
-			// ---- 打包：和命令行是同一套命令（Tools\Pack-CrossingVoid.ps1）----
+			// ---- 打包：和命令行是同一套命令（插件自带的 Tools\Pack-CrossingVoid.ps1）----
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6.f, 0.f, 2.f, 0.f)
 			[
 				SNew(SComboBox<TSharedPtr<FChoice>>)
@@ -244,7 +245,7 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 			[
 				SNew(SButton)
 				.Text(this, &SCrossingChunkPanel::GetPackButtonText)
-				.ToolTipText(LOCTEXT("PackTip", "跑 Tools\\Pack-CrossingVoid.ps1（日志在下面实时滚动，结束自动刷新报告）"))
+				.ToolTipText(LOCTEXT("PackTip", "跑插件自带的 Tools\\Pack-CrossingVoid.ps1（日志在下面实时滚动，结束自动刷新报告）"))
 				.OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnPackClicked))
 			]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(2.f, 0.f)
@@ -293,7 +294,7 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 					.OnTextCommitted_Lambda([this](const FText& NewText, ETextCommit::Type)
 					{
 						OutputDir = NewText.ToString().TrimStartAndEnd();
-						if (OutputDir.IsEmpty()) { OutputDir = TEXT("D:\\Build\\CrossingVoid"); }
+						if (OutputDir.IsEmpty()) { OutputDir = TEXT("F:\\DaBaoV\\Crossingvoid"); }
 						SaveSettings();
 					})
 				]
@@ -355,7 +356,12 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 			+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center).Padding(14.f, 0.f, 0.f, 0.f)
 			[
 				SNew(STextBlock)
-				.Text_Lambda([this]() { return FText::FromString(StatusReleaseRoot.IsEmpty() ? TEXT("基线目录：—") : FString::Printf(TEXT("基线目录：%s"), *StatusReleaseRoot)); })
+				// 显示界面里配置的那份（每次打包/查状态都会原样传给脚本）；脚本还没回报时退回它自己报的值
+				.Text_Lambda([this]()
+				{
+					const FString& Root = ReleaseRoot.IsEmpty() ? StatusReleaseRoot : ReleaseRoot;
+					return FText::FromString(Root.IsEmpty() ? TEXT("基线目录：—") : FString::Printf(TEXT("基线目录：%s"), *Root));
+				})
 				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 			]
 		]
@@ -423,6 +429,46 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 					[
 						SNew(STextBlock)
 						.Text_Lambda([this]() { return GetCookProcessCountHint(); })
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
+						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+					]
+				]
+				// ---- 基线位置：建基线和算补丁都走它，改完下次打包生效（存进 EditorPerProjectUserSettings.ini 的 [CrossingChunkPackage]）----
+				+ SVerticalBox::Slot().AutoHeight().Padding(6.f, 0.f, 6.f, 6.f)
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("ReleaseRootLabel", "基线位置"))
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
+					]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6.f, 0.f)
+					[
+						SNew(SBox).WidthOverride(360.f).MinDesiredHeight(26.f)
+						[
+							SNew(SEditableTextBox)
+							.Text_Lambda([this]() { return FText::FromString(ReleaseRoot); })
+							.Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
+							.ToolTipText(LOCTEXT("ReleaseRootTip",
+								"基线（Releases）存放的根目录，传给脚本的 -ReleaseRoot。\n"
+								"《版本更新》往这里建基线（一条约 1.5 GB），《常规补丁》也从这里读基线算差异。\n"
+								"留空恢复默认 F:\\DaBaoV\\Crossingvoid\\Release"))
+							.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
+							.SelectAllTextWhenFocused(true)
+							.OnTextCommitted_Lambda([this](const FText& NewText, ETextCommit::Type)
+							{
+								ReleaseRoot = NewText.ToString().TrimStartAndEnd();
+								if (ReleaseRoot.IsEmpty()) { ReleaseRoot = TEXT("F:\\DaBaoV\\Crossingvoid\\Release"); }
+								SaveSettings();
+								RefreshStatus();
+							})
+						]
+					]
+					+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center)
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("ReleaseRootHint", "改完下次打包生效；和「输出目录」放在同一个盘最省事"))
 						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
 						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 					]
@@ -1101,7 +1147,7 @@ SCrossingChunkPanel::~SCrossingChunkPanel()
 
 	FString SCrossingChunkPanel::BuildPackCommand() const
 {
-	const FString Script = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("Tools/Pack-CrossingVoid.ps1"));
+	const FString Script = FCrossingChunkRuleService::GetScriptPath(TEXT("Pack-CrossingVoid.ps1"));
 	// 服务器目标没有"版本/补丁"概念（出散件、走 git），统一按 Quick 传
 	const bool bServer = SelectedTarget.IsValid() && SelectedTarget->Target == TEXT("Server");
 	const FString Mode = (bServer || !SelectedMode.IsValid()) ? TEXT("Quick") : SelectedMode->Value;
@@ -1115,6 +1161,10 @@ SCrossingChunkPanel::~SCrossingChunkPanel()
 FString SCrossingChunkPanel::BuildExtraArgs() const
 {
 	FString Extra;
+	// 工程根：脚本自己也能推（从脚本位置向上找 .uproject），这里显式给一份，
+	// 是为了插件被装到 Engine\Plugins\ 下时（那种位置推不出工程）也能跑。
+	// 引号写法与下面同理。
+	Extra += FString::Printf(TEXT(" -ProjectRoot \\\"%s\\\""), *FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()));
 	// 这两个值最终会被塞进外层 -Command "..." 的双引号里，所以内层引号必须写成 \"。
 	// Windows 解析命令行时裸引号会被吃掉，PowerShell 收到就成了裸值：
 	//   · 逗号被当成数组分隔符 -> -Maps 绑不定 [string]（实测报 ParameterArgumentTransformationError）
@@ -1122,6 +1172,10 @@ FString SCrossingChunkPanel::BuildExtraArgs() const
 	if (!OutputDir.IsEmpty())
 	{
 		Extra += FString::Printf(TEXT(" -ArchiveDir \\\"%s\\\""), *OutputDir);
+	}
+	if (!ReleaseRoot.IsEmpty())
+	{
+		Extra += FString::Printf(TEXT(" -ReleaseRoot \\\"%s\\\""), *ReleaseRoot);
 	}
 	if (!MapsCsv.IsEmpty())
 	{
@@ -1146,20 +1200,20 @@ FString SCrossingChunkPanel::BuildExtraArgs() const
 
 FString SCrossingChunkPanel::BuildClearCacheCommand() const
 {
-	const FString Script = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("Tools/Pack-CrossingVoid.ps1"));
-	return FString::Printf(TEXT("& '%s' -ClearCache"), *Script);
+	const FString Script = FCrossingChunkRuleService::GetScriptPath(TEXT("Pack-CrossingVoid.ps1"));
+	return FString::Printf(TEXT("& '%s' -ClearCache -ProjectRoot \\\"%s\\\""), *Script, *FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()));
 }
 
 FString SCrossingChunkPanel::BuildStatusCommand() const
 {
-	const FString Script = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("Tools/Pack-CrossingVoid.ps1"));
+	const FString Script = FCrossingChunkRuleService::GetScriptPath(TEXT("Pack-CrossingVoid.ps1"));
 	const FString Platform = SelectedTarget.IsValid() ? SelectedTarget->Platform : TEXT("Win64");
 	const FString Target = SelectedTarget.IsValid() ? SelectedTarget->Target : TEXT("Client");
 	const FString Mode = SelectedMode.IsValid() ? SelectedMode->Value : TEXT("Quick");
 	// 内层引号要写成 \"（原因见 BuildExtraArgs）
 	return FString::Printf(
-		TEXT("& '%s' -Status -Mode %s -Platform %s -Target %s -ReleaseVersion \\\"%s\\\" -ArchiveDir \\\"%s\\\""),
-		*Script, *Mode, *Platform, *Target, *GetReleaseVersion(), *OutputDir);
+		TEXT("& '%s' -Status -ProjectRoot \\\"%s\\\" -Mode %s -Platform %s -Target %s -ReleaseVersion \\\"%s\\\" -ArchiveDir \\\"%s\\\" -ReleaseRoot \\\"%s\\\""),
+		*Script, *FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()), *Mode, *Platform, *Target, *GetReleaseVersion(), *OutputDir, *ReleaseRoot);
 }
 
 FString SCrossingChunkPanel::DeriveReleaseVersion(const FString& InPlayerVersion)
@@ -1444,7 +1498,7 @@ FReply SCrossingChunkPanel::OnClearCacheClicked()
 		return FReply::Handled();
 	}
 
-	const FString Script = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("Tools/Pack-CrossingVoid.ps1"));
+	const FString Script = FCrossingChunkRuleService::GetScriptPath(TEXT("Pack-CrossingVoid.ps1"));
 	if (!FPaths::FileExists(Script))
 	{
 		StatusMessage = FString::Printf(TEXT("找不到打包脚本：%s"), *Script);
@@ -1488,7 +1542,7 @@ FReply SCrossingChunkPanel::OnPackClicked()
 		return FReply::Handled();
 	}
 
-	const FString Script = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("Tools/Pack-CrossingVoid.ps1"));
+	const FString Script = FCrossingChunkRuleService::GetScriptPath(TEXT("Pack-CrossingVoid.ps1"));
 	if (!FPaths::FileExists(Script))
 	{
 		StatusMessage = FString::Printf(TEXT("找不到打包脚本：%s"), *Script);
@@ -1654,6 +1708,12 @@ void SCrossingChunkPanel::ApplySavedSettings()
 		OutputDir = SavedOutputDir;
 	}
 
+	const FString SavedReleaseRoot = LoadSetting(TEXT("ReleaseRoot"));
+	if (!SavedReleaseRoot.IsEmpty())
+	{
+		ReleaseRoot = SavedReleaseRoot;
+	}
+
 	// 勾选的地图：先记下来，ReloadMaps() 扫描完之后按这份清单恢复勾选。
 	// 按目标分开存（服务器打的图跟客户端不一样）；旧的单键 "Maps" 当兜底，只有第一次会用到。
 	FString SavedMaps = LoadSetting(*GetMapsSettingKey());
@@ -1694,6 +1754,7 @@ void SCrossingChunkPanel::SaveSettings()
 	SaveSetting(TEXT("Target"), SelectedTarget.IsValid() ? SelectedTarget->Label : TEXT(""));
 	SaveSetting(TEXT("Mode"), SelectedMode.IsValid() ? SelectedMode->Value : TEXT(""));
 	SaveSetting(TEXT("OutputDir"), OutputDir);
+	SaveSetting(TEXT("ReleaseRoot"), ReleaseRoot);
 	SaveSetting(*GetMapsSettingKey(), MapsCsv);   // 勾选的地图按目标分开记
 	SaveSetting(TEXT("PlayerVersion"), PlayerVersion);
 	SaveSetting(TEXT("CookProcessCount"), FString::FromInt(CookProcessCount));

@@ -36,6 +36,22 @@ public:
 	/** 规则段名 */
 	static FString GetRuleSection();
 
+	/**
+	 * 打包脚本所在目录：插件自带的 Tools\（= <插件>\Tools）。
+	 * 找不到返回空串。
+	 */
+	static FString GetPluginToolsDir();
+
+	/**
+	 * 取一份打包脚本的完整路径。
+	 * 顺序：插件自带的 Tools\ 优先 → 退回 <工程>\Tools\（脚本还挂在工程里的旧布局）。
+	 * 两处都没有时返回「退回位置」的期望路径，由调用方自己 FPaths::FileExists 判断。
+	 *
+	 * 为什么脚本要跟着插件走：编辑器里点的和打包时读的必须是同一套东西，
+	 * 脚本放在插件里就不会出现「插件更新了、脚本还是老的」。
+	 */
+	static FString GetScriptPath(const FString& ScriptFileName);
+
 	/** 读出全部规则；失败时 OutError 带原因。 */
 	static bool LoadRules(TArray<FCrossingChunkRule>& OutRules, FString& OutError);
 

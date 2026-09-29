@@ -174,6 +174,7 @@ private:
 	TArray<TSharedPtr<FChoice>> ModeOptions;    // 快速验证 / 正式发布 / 打补丁
 	TSharedPtr<FChoice> SelectedMode;
 	FString OutputDir;   // 产物目录（传给脚本的 -ArchiveDir）
+	FString ReleaseRoot; // 基线（Releases）根目录（传给脚本的 -ReleaseRoot）
 	FString MapsCsv;     // 选定地图（逗号分隔；空 = 用 DefaultGame.ini 的 +MapsToCook）
 	FString PlayerVersion;   // 给玩家看的版本号（打包时写进安卓 VersionDisplayName）
 	/**

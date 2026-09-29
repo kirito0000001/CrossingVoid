@@ -9,6 +9,7 @@
 #include "Framework/Notifications/NotificationManager.h"
 #include "HAL/FileManager.h"
 #include "Internationalization/Regex.h"
+#include "Interfaces/IPluginManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "SCrossingChunkPanel.h"
@@ -249,6 +250,42 @@ FString FCrossingChunkRuleService::GetRuleIniPath()
 FString FCrossingChunkRuleService::GetRuleSection()
 {
 	return TEXT("/Script/CrossingChunk.CrossingChunkRuleSet");
+}
+
+FString FCrossingChunkRuleService::GetPluginToolsDir()
+{
+	// <插件>\Tools。插件装在工程里时是 <工程>\Plugins\CrossingChunkEditor\Tools\，
+	// 装在引擎里时是 Engine\Plugins\...\Tools\ —— 两种都取得到，所以别去猜工程相对路径。
+	// 插件名 = .uplugin 的文件名，写死在这里（插件不打算改名）。
+	// 显式构造 FString：IPluginManager 同时有 FString 和 ANSIStringView 两个重载，
+	// 直接传 TEXT("...") 会落到「哪个都不精确匹配」的尴尬位置。
+	const FString PluginName(TEXT("CrossingChunkEditor"));
+	// UE5 的 IPluginManager::Get() 返回引用（UE4 时代才返回指针），所以这里不能用 if (ptr = ...) 判空。
+	IPluginManager& PluginManager = IPluginManager::Get();
+	if (const TSharedPtr<IPlugin> Plugin = PluginManager.FindPlugin(PluginName))
+	{
+		const FString Dir = FPaths::Combine(Plugin->GetBaseDir(), TEXT("Tools"));
+		if (FPaths::DirectoryExists(Dir))
+		{
+			return FPaths::ConvertRelativePathToFull(Dir);
+		}
+	}
+	return FString();
+}
+
+FString FCrossingChunkRuleService::GetScriptPath(const FString& ScriptFileName)
+{
+	// 插件自带的那份优先；找不到再退回 <工程>\Tools\（脚本还挂在工程里的旧布局）。
+	const FString PluginDir = GetPluginToolsDir();
+	if (!PluginDir.IsEmpty())
+	{
+		const FString PluginScript = FPaths::ConvertRelativePathToFull(FPaths::Combine(PluginDir, ScriptFileName));
+		if (FPaths::FileExists(PluginScript))
+		{
+			return PluginScript;
+		}
+	}
+	return FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectDir(), TEXT("Tools"), ScriptFileName));
 }
 
 FString FCrossingChunkRuleService::NormalizeFolderPath(const FString& FolderPath)
@@ -769,7 +806,7 @@ void FCrossingChunkEditorModule::RegisterMainMenu()
 					LOCTEXT("OpenPanel", "二游打包"),
 					LOCTEXT("OpenPanelTip",
 						"打开《二游打包》页：分块规则、未分类清单、打包与实时日志\n"
-						"和命令行跑 Tools\\Pack-CrossingVoid.ps1 是同一套命令"),
+						"和命令行跑插件自带的 Tools\\Pack-CrossingVoid.ps1 是同一套命令"),
 					FSlateIcon(),
 					FUIAction(FExecuteAction::CreateLambda([]()
 					{

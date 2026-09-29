@@ -1,6 +1,7 @@
 #include "ZDBridgeLibrary.h"
 
 #include "AssetToolsModule.h"
+#include "Engine/Blueprint.h"
 #include "Factories/Factory.h"
 #include "Misc/PackageName.h"
 #include "PaperFlipbook.h"
@@ -1083,4 +1084,75 @@ FString UZDBridgeLibrary::ReadDataTableRow(const FString& TableObjectPath, FName
     Root->SetBoolField(TEXT("found"), true);
     Root->SetObjectField(TEXT("row"), Row);
     return Finish(FString());
+}
+
+FString UZDBridgeLibrary::ResolveLightConfigurationAssets(
+    const FString& ItemObjectPath, const FString& TeamSelectObjectPath, const FString& MetaSoundObjectPath)
+{
+    // 三个角色别名和工具箱第 3 步的约定一致：
+    // item = Item_<代号>（Blueprint）、team = UI_TeamSelect（WidgetBlueprint）、meta = <代号>_OnDM（MetaSoundSource）。
+    const TArray<TPair<FString, FString>> Requests = {
+        TPair<FString, FString>(TEXT("item"), ItemObjectPath),
+        TPair<FString, FString>(TEXT("team"), TeamSelectObjectPath),
+        TPair<FString, FString>(TEXT("meta"), MetaSoundObjectPath),
+    };
+
+    TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+    Root->SetStringField(TEXT("protocolName"), TEXT("ZDBridge.LightConfigAssets"));
+    Root->SetNumberField(TEXT("protocolVersion"), 1);
+    // 诊断：这两类的类由编辑器模块提供 —— 模块不在，就必然读不到（离线 commandlet 的典型症状）。
+    Root->SetBoolField(TEXT("hasWidgetBlueprintClass"),
+        FindObject<UClass>(nullptr, TEXT("/Script/UMGEditor.WidgetBlueprint")) != nullptr);
+    Root->SetBoolField(TEXT("hasMetaSoundSourceClass"),
+        FindObject<UClass>(nullptr, TEXT("/Script/MetasoundEngine.MetaSoundSource")) != nullptr);
+
+    TArray<TSharedPtr<FJsonValue>> Items;
+    int32 LoadedCount = 0;
+    for (const TPair<FString, FString>& Request : Requests)
+    {
+        TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
+        Entry->SetStringField(TEXT("role"), Request.Key);
+        Entry->SetStringField(TEXT("objectPath"), Request.Value);
+
+        // 存在性**用包名问**（不是对象路径）：这一句不依赖任何模块加载，
+        // 所以它才是"资产到底在不在"的权威答案 —— 也才分得清"没有"和"读不到"。
+        const FString PackageName = FPackageName::ObjectPathToPackageName(Request.Value);
+        const bool bPackageExists = !Request.Value.IsEmpty() && FPackageName::DoesPackageExist(PackageName);
+        Entry->SetBoolField(TEXT("packageExists"), bPackageExists);
+
+        UObject* Asset = Request.Value.IsEmpty()
+            ? nullptr
+            : StaticLoadObject(UObject::StaticClass(), nullptr, *Request.Value);
+        Entry->SetBoolField(TEXT("loaded"), Asset != nullptr);
+        Entry->SetStringField(TEXT("className"), Asset ? Asset->GetClass()->GetName() : FString());
+
+        // 蓝图默认对象：Python 那边是拼 `Default__<名>_C` 字符串拿的，
+        // 名字带后缀或改过名就会拼错；这里直接问 GeneratedClass。
+        UObject* DefaultObject = nullptr;
+        if (UBlueprint* Blueprint = Cast<UBlueprint>(Asset))
+        {
+            DefaultObject = Blueprint->GeneratedClass ? Blueprint->GeneratedClass->GetDefaultObject() : nullptr;
+        }
+        else if (UClass* AssetClass = Cast<UClass>(Asset))
+        {
+            DefaultObject = AssetClass->GetDefaultObject();
+        }
+
+        Entry->SetBoolField(TEXT("hasDefaultObject"), DefaultObject != nullptr);
+        if (Asset)
+        {
+            ++LoadedCount;
+        }
+
+        Items.Add(MakeShared<FJsonValueObject>(Entry));
+    }
+
+    Root->SetBoolField(TEXT("ok"), LoadedCount == Requests.Num());
+    Root->SetNumberField(TEXT("loadedCount"), LoadedCount);
+    Root->SetArrayField(TEXT("items"), Items);
+
+    FString Output;
+    TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Output);
+    FJsonSerializer::Serialize(Root, Writer);
+    return Output;
 }

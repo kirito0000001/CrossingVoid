@@ -23,7 +23,9 @@ public class CrossingChunkEditor : ModuleRules
 			"UnrealEd",
 			"ContentBrowser",
 			"Json",
-			"ToolMenus"
+			"ToolMenus",
+			// 为了 IPluginManager：打包脚本跟着插件走，路径得从插件目录推（见 GetScriptPath）
+			"Projects"
 		});
 	}
 }

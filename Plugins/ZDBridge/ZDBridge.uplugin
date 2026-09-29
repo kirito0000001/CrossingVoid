@@ -5,11 +5,16 @@
   "FriendlyName": "ZD Bridge",
   "Description": "Editor bridge for CrossingVoid Paper2D and PaperZD automation.",
   "Category": "Editor Scripting",
-  "CanContainContent": false,
+  "CanContainContent": true,
   "Modules": [
     {
       "Name": "ZDBridge",
       "Type": "Editor",
+      "LoadingPhase": "Default"
+    },
+    {
+      "Name": "ZDBridgeRuntime",
+      "Type": "Runtime",
       "LoadingPhase": "Default"
     }
   ],

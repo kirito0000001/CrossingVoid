@@ -6,7 +6,6 @@
 	"Description": "目录级 Chunk 标记：右键文件夹指定 / 移除 Chunk。",
 	"Category": "DreamPlugin",
 	"CreatedBy": "DreamMoon",
-	"EngineVersion": "5.8.0",
 	"CanContainContent": true,
 	"IsBetaVersion": false,
 	"IsExperimentalVersion": false,
