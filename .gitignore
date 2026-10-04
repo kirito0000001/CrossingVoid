@@ -58,3 +58,7 @@ Desktop.ini
 # 会被自动编译成 /Game/Decompiled/... 下的临时资产，不是源文件
 DShader/Decompiled/
 Content/Decompiled/
+
+# DreamFX/DreamShader 反编译产物（临时排查用，不入库）
+DFX/Decompiled/
+Plugins/ZDBridge/Content/Decompiled/

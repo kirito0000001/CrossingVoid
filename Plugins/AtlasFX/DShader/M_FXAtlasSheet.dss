@@ -21,12 +21,24 @@
 // 正式版与打点版的数学完全相同，只是输出从「诊断配色」换回「采样结果」。
 // ============================================================================
 
-#pragma material(ShadingModel = Unlit, BlendMode = Additive, bUsedWithNiagaraSprites = true, Backend = Graph)
+// 用法标记：精灵和网格两个渲染器共用同一个材质 —— 采样数学完全一样，差别只在渲染器喂进来的
+// TexCoord 和面片朝向，所以没必要维护两份。引擎侧字段名是 bUsedWithNiagaraMeshParticles
+// （Material.h:759，不是 bUsedWithNiagaraMeshes）。
+// TwoSided：网格渲染器喂进来的面片绕序不一定朝相机，关掉背面剔除省得整个特效消失。
+// 加性混合下面片只有一组三角形，双面不会出现「前后两层叠加变亮」的问题（Cube 才会）。
+// ZDBridge 手搓的那张同用途材质也是这么配的（ZDBridgeEffectNiagara.cpp:229 Material->TwoSided = true）。
+#pragma material(ShadingModel = Unlit, BlendMode = Additive, TwoSided = true, bUsedWithNiagaraSprites = true, bUsedWithNiagaraMeshParticles = true, Backend = Graph)
 
 /// @group Atlas   @desc 图集贴图（手工兜底模式用；Flipbook 模式同样用它）
 /// @default /Game/AssetMaterial/FXs/通用Flipbook/Textures/Defatk
 uniform Texture2D Sheet;
 
+// ============================================================================
+// 2026-10-04 UV 探针排查结论（已换回正式版）：
+//   面片呈「黑→红/绿渐变 + 整块偏蓝」⇒ ① 网格 TexCoord 落在 0..1（正常）；
+//   ② 蓝 = DMP0.z + DMP0.w > 0.5 ⇒ **三个动态材质参数确实送到了**。
+//   两条前提都成立，所以正式版的画布还原数学可以直接用。
+// ============================================================================
 export void M_FXAtlasSheet(inout material m)
 {
     // 当前帧在图集里的像素矩形
@@ -36,6 +48,7 @@ export void M_FXAtlasSheet(inout material m)
     // 尺寸包：.xy = 图集贴图宽高，.zw = 画布宽高
     float4 Sizes = UE.Expression(Class = "DynamicParameter", ParameterIndex = 2).RGBA;
 
+    // ── 正常路径：画布还原 ──────────────────────────────────────────────
     // 面片 UV（0..1）→ 画布像素坐标 → 帧内 0..1
     float2 CanvasPx = UE.TexCoord(Index = 0) * Sizes.zw;
     float2 Local = (CanvasPx - CanvasRect.xy) / CanvasRect.zw;
@@ -46,7 +59,18 @@ export void M_FXAtlasSheet(inout material m)
 
     // 帧内 0..1 → 图集里的实际 UV
     float2 UV = (AtlasRect.xy + Local * AtlasRect.zw) / Sizes.xy;
-    float4 C = Sheet.Sample(UV) * Mask;
+    float4 CMain = Sheet.Sample(UV) * Mask;
+
+    // ── 兜底路径：三个动态参数全是 0 ────────────────────────────────────
+    // 出现这种情况说明上游没送数据（材质编辑器预览里本来就没有粒子数据；
+    // 运行时出现就说明 Play_SpriteAtlas 那三个写入没生效）。
+    // 此时直接用网格自己的 UV 采样整张贴图 —— 保证材质任何时候都有东西可看，
+    // 而且它本身就是判据：**网格上出现"整张图集"= 三个动态参数没送到**。
+    // 用加法求和判零而不是分支：这个材质要保持无分支（分支会在 VM/着色器编译上踩坑）。
+    float DataSum = Sizes.x + Sizes.y + Sizes.z + Sizes.w + CanvasRect.z + CanvasRect.w;
+    float NoData = step(DataSum, 0.0001);
+    float4 CFallback = Sheet.Sample(UE.TexCoord(Index = 0));
+    float4 C = lerp(CMain, CFallback, NoData);
 
     // Additive 的像素着色器输出是 Color * Opacity（BasePassPixelShader.usf:2325-2327），
     // 所以「颜色给采样值、透明度给采样 alpha」= 预乘式的加性精灵，正是闪电要的。
