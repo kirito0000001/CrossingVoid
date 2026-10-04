@@ -64,6 +64,11 @@ UV = (整数格 + 格内UV) × (1/列数, 1/行数)
 | 播放 | Module Script `Play Sprite Atlas` | 任意发射器 | 拖进 Particle Spawn / Particle Update 模块栈 |
 | 采样 | Material Function `MF_SpriteAtlasUV` | 任意材质 | 插在 TextureSample 的 UV 输入上 |
 
+> **实际落地形态（2026-10-04）**：采样那一件做成了**整张材质** `/AtlasFX/M_FXAtlasSheet`
+> （不是材质函数，见 §10、§10.2）；另外多出一件 **尺寸换算** `/AtlasFX/Modules/Sprite_Atlas_Size`
+> —— 精灵渲染器读 `Particles.SpriteSize`、网格渲染器读 `Particles.Scale`，网格路线必须靠它换算
+> （见 §4.2 ③、§14）。
+
 等分网格也能吃（每帧矩形相同），所以现有 grid 特效可逐步迁移，**但不强制**。
 
 ## 4. 已定决策
@@ -130,19 +135,41 @@ UV = (整数格 + 格内UV) × (1/列数, 1/行数)
     `...Parameter1` → 索引 1、`...Parameter2` → 索引 2（`NiagaraSpriteRendererProperties.cpp:355-358` 做映射）。
     写成 `1/2/3` 会整体错位一位，材质读到默认值 `(1,1,1,1)` ⇒ UV 算飞 ⇒ **全透明，什么都看不见**（踩过）
 
-**③ 尺寸模块 `Sprite Atlas Size`（可选）—— 2026-10-04 状态：仍未做**
+**③ 尺寸模块 `Sprite Atlas Size` —— 2026-10-04 状态：已做**（原设计为「可选」，落地时因为 Mesh 路线必需而变成必件）
 
-- 「面片尺寸跟随帧」目前由播放模块的 `Size Scale` / `Fit Frame` 兼任（见 §4.2 ②）
-- 原设计：输入 `Atlas` + `Base Plane Size`(默认 `0.928, 0.640`，即 `FXDefault` 面片尺寸) +
-  `Fit Frame`(**float 0/1，不是 bool** —— 避开 Select 节点，直接喂 `Lerp`) + `Uniform Scale`
-- 原设计里「帧号直接读 `Particles.SubImageIndex`」**已作废**：那个属性绝对不能写（§8-7）。
-  真要做，帧号得从播放模块的输出引脚拉过来，或者自己再算一遍。
-- 输出 `Particles.Scale = (目标W / BaseW, 1, 目标H / BaseH)`
-  - `Fit Frame = 0` → 目标 = 画布尺寸（**画布还原**模式用）
-  - `Fit Frame = 1` → 目标 = 该帧的图集矩形尺寸（**铺满**模式用）
-- 作用：**分辨率比规范大、比例不变**时画面不会变小（928×640 → 1856×1280 时 scale=(2,1,2)）
-- Mesh 渲染器的按粒子缩放走 `ScaleBinding`（`NiagaraMeshRendererProperties.h:332`，默认绑 `Particles.Scale`）；
-  Sprite 渲染器走 `SpriteSizeBinding`（`NiagaraSpriteRendererProperties.h:305`，默认 `Particles.SpriteSize`）
+- 源文件 `DFX/Modules/M_SpriteAtlasSize.dfm` → 资产 `/AtlasFX/Modules/Sprite_Atlas_Size`
+- **为什么必需**：两个渲染器读的不是同一个属性 —— 网格渲染器按粒子缩放走 `ScaleBinding`
+  （`NiagaraMeshRendererProperties.h:332`，默认绑 `Particles.Scale`），精灵渲染器走 `SpriteSizeBinding`
+  （`NiagaraSpriteRendererProperties.h:305`，默认 `Particles.SpriteSize`）。播放模块只写 `SpriteSize`
+  （它要同时服务两种渲染器的尺寸语义），所以网格版必须再挂一个模块把它换算成 `Particles.Scale`。
+- **实现（与 §4.2 原设计的差异）**：原设计的 `Atlas` / `Base Plane Size` / `Fit Frame` 三个输入**都没有**落地。
+  「目标尺寸」直接读播放模块写好的 `Particles.SpriteSize`（世界单位，已乘过 `SizeScale`），
+  本模块只做一次换算，不重复算帧号 ⇒ 播放逻辑仍然只有一份。原设计里
+  「帧号直接读 `Particles.SubImageIndex`」也**作废**：那个属性绝对不能写（§8-7）。
+- 输入：
+
+  | 输入 | 默认 | 含义 |
+  |---|---|---|
+  | `MeshSize`（Vector2） | `(92.8, 64.0)` | 面片在网格局部空间的尺寸。工程面片 `FXDefault` 就是 `(92.8, 64.0)`（宽 × 高，单位同世界单位） |
+  | `MinSize`（Vector2） | `(92.8, 64.0)` | **尺寸下限**。`Particles.SpriteSize` 为 0 时宽度会算成 0 ⇒ 面片静默消失（不报任何错）。这个下限保证面片永远可见，同时是排查判据：面片以下限尺寸出现 = 上游 `SpriteSize` 是 0 |
+  | `DepthScale` | `1.0` | 厚度方向缩放（网格局部 Y）。真平面保持 1.0；拿 Cube 当薄片时调小（0.05 = 5 厘米厚） |
+  | `UniformScale` | `1.0` | 宽高整体倍率，不影响厚度 |
+  | `MeshYaw` | `-90.0` | 绕 Z 的朝向修正（度）。**必须和渲染器的 `FacingMode` 配对**，见 §14 |
+
+- 函数体（三行，无分支）：
+  ```
+  float2 Target = max(Particles.SpriteSize, MinSize) * UniformScale;
+  Particles.Scale = float3(Target.x / max(MeshSize.x, 0.001),
+                           DepthScale,
+                           Target.y / max(MeshSize.y, 0.001));
+  float HalfYaw = MeshYaw * 0.00872664626;          // 0.5 * PI / 180，度 → 半弧度
+  Particles.MeshOrientation = float4(0.0, 0.0, sin(HalfYaw), cos(HalfYaw));
+  ```
+  两个 `max()` 都不是保险而是必需：`MeshSize` 填 0 会让 `Scale` 变 `inf`，`SpriteSize` 是 0 会让宽度变 0 ——
+  两种都是**网格直接消失且引擎不报任何错**。`max` 同时能兜住 NaN（HLSL 的 `max` 展开成 `a > b ? a : b`，
+  NaN 比较恒 false ⇒ 取下限）。
+- 作用：**分辨率比规范大、比例不变**时画面不会变小（928×640 → 1856×1280 时 `Scale = (2, 1, 2)`）
+- 必须排在 `Play_SpriteAtlas` **之后**（Niagara 按栈序执行，它读的就是播放模块写的结果）
 
 **④ Material Function `MF_SpriteAtlasUV`（采样）**
 
@@ -158,6 +185,11 @@ UV = (整数格 + 格内UV) × (1/列数, 1/行数)
   （加性混合下就是明显的脏边）
 - 像素内缩在 DI 侧做（`RectInsetPixels`，默认 0.5px），吃掉 `padding=2 / extrude=0` 的邻帧渗色
 - **比例真的变了**（比如 1:1 的图）：不自动处理 → 报警告 + 换面片（面片形状是几何，不改）
+
+> **落地形态（2026-10-04）**：没有做成材质函数，而是**整张材质** `/AtlasFX/M_FXAtlasSheet`
+> （源 `Plugins/AtlasFX/DShader/M_FXAtlasSheet.dss`）；三包矩形数据直接从三个动态材质参数里取
+> （不再需要外部接线），`Mask` 用 `step` 掩码实现，并加了「三参数全 0 时退回直接采样」的兜底（§10.2）。
+> 精灵与网格两个渲染器共用这一张材质（§10.1）。
 
 ## 5. 数据层：Paper2D 侧的事实（决定能不能只靠资产还原）
 
@@ -283,6 +315,15 @@ UV = (整数格 + 格内UV) × (1/列数, 1/行数)
    NiagaraComponent 建 DI 实例时用的是 `NewObject` + `CopyTo`（**不是** `DuplicateObject`），
    而 `UNiagaraDataInterface::CopyTo` 只搬 `CopyToInternal` 里显式拷贝的字段 ——
    不覆写的话运行时实例拿到的是**空帧表**（编辑器面板却显示正常，因为面板看的是资产上的实例）。
+10. **网格渲染器：`FacingMode` 与模块的 `MeshYaw` 必须配对**（2026-10-04 实测，静默失效级）：
+    `CameraPlane` 配 `MeshYaw = -90` 会让面片侧对镜头 ⇒ **完全看不见且引擎不报任何错**。
+    本工程用「不写 `FacingMode`（默认 `Default`）+ `MeshYaw = -90`」。配对表与引擎依据见 §14.3。
+11. **网格渲染器挂材质要两个属性一起给**：`OverrideMaterials` 数组**加上**
+    `bOverrideMaterials = true`（构造函数默认 `false`，只给数组会被静默忽略 ⇒ 显示灰白 `WorldGridMaterial`）；
+    写 `Material = "..."` 会被 DreamFX 静默丢掉。见 §14.2。
+12. **模块是编译时内联进发射器的**：改完 `.dfm` **必须重编 `.dfs`** 才生效，只重编模块不够。见 §14.6-3。
+13. **`Particles.Scale` / `Particles.SpriteSize` 为 0 都会让网格静默消失**（不报任何错）：
+    尺寸换算模块用 `max(..., MinSize)` 兜下限，别省。见 §4.2 ③ 与 §14.6-2。
 
 ## 9. 环境注意事项（本机）
 
@@ -359,6 +400,44 @@ UV = (整数格 + 格内UV) × (1/列数, 1/行数)
   浅色背景下加性看不清 → 换 AlphaComposite。
 - 混合模式与 UV 换算无关：将来要换混合模式，材质里那 10 个 UV 节点一个都不用动。
 
+### 10.1 用法标记：精灵与网格共用一个材质（2026-10-04 实测）
+
+`M_FXAtlasSheet` 的 `#pragma material(...)` 必须同时具备这两条：
+
+```
+#pragma material(ShadingModel = Unlit, BlendMode = Additive, TwoSided = true,
+                 bUsedWithNiagaraSprites = true, bUsedWithNiagaraMeshParticles = true,
+                 Backend = Graph)
+```
+
+- **`bUsedWithNiagaraMeshParticles = true`** —— 字段名就在 `Material.h:759`（`bUsedWithNiagaraSprites` 在 `:751`）。
+  ⚠️ **不是** `bUsedWithNiagaraMeshes`、也**不是**旧的 `bUsedWithMeshParticles`（那是 Cascade 时代的 `:757`）。
+  DreamShader 的 pragma 走 `UMaterial` 反射逐字段落实（`DreamShaderCompiler/Private/Reflection/DreamShaderMaterialSettings.cpp`），
+  名字写错会报 `DSH7123 Invalid material setting path`，所以"check 过了"就说明名字对、标记真的写进资产了。
+- **`TwoSided = true`** —— 网格渲染器喂进来的面片绕序不一定朝相机（网格自带朝向 + `FacingMode` 都可能让它背对），
+  关掉背面剔除省得整个特效消失。加性混合下面片只有一组三角形，双面不会出现"前后两层叠加变亮"（Cube 才会）。
+  ZDBridge 手搓的同用途材质也是这么配的（`ZDBridgeEffectNiagara.cpp:229 Material->TwoSided = true`）。
+- 采样数学完全一样，两个渲染器共用一个材质即可 —— 差别只在渲染器喂进来的 `TexCoord` 和面片朝向。
+
+### 10.2 动态参数兜底：全 0 时退回直接采样（2026-10-04 加）
+
+材质的正常路径要求三个动态材质参数都有效，否则 `CanvasRect.zw` 是 0 ⇒ `Local = 0/0 = NaN` ⇒
+遮罩恒 0 ⇒ **全透明**。出现这种情况的地方有两个：材质编辑器的预览（本来就没有粒子数据）、
+以及上游模块没写参数（DI 空表、模块没挂、渲染器绑定没解析到）。
+
+兜底写法（保持**无分支**，理由见 §11「模块体里不要写 `if/else`」）：
+
+```
+float DataSum = Sizes.x + Sizes.y + Sizes.z + Sizes.w + CanvasRect.z + CanvasRect.w;
+float NoData  = step(DataSum, 0.0001);                  // 全 0 ⇒ 1
+float4 CMain     = Sheet.Sample(UV) * Mask;             // 正常路径：画布还原
+float4 CFallback = Sheet.Sample(UE.TexCoord(Index = 0)); // 兜底：网格自己的 UV 采样整张贴图
+float4 C = lerp(CMain, CFallback, NoData);
+```
+
+副作用是它顺便成了**判据**：材质编辑器预览里应看到一张干净的整张图集；
+运行时若网格上也出现"整张图集"，就说明三个动态参数没送到（对照 §7 的排查表）。
+
 ## 11. 文本创作链的现状与遗留（2026-10-04）
 
 **三层文本源 → 生成资产**：
@@ -367,8 +446,12 @@ UV = (整数格 + 格内UV) × (1/列数, 1/行数)
 |---|---|---|---|
 | 数据 | `Plugins/AtlasFX/Source/AtlasFX/**`（C++） | `UnrealEditor-AtlasFX.dll` | `Build.bat CrossingVoidEditor Win64 Development -Project=C:\CrossingVoid\CrossingVoid.uproject`（先关编辑器） |
 | 播放 | `DFX/Modules/M_PlaySpriteAtlas.dfm` | `/AtlasFX/Modules/Play_SpriteAtlas` | `pwsh -File Plugins/DreamFX/.skill/dfx.ps1 build ...` |
+| 尺寸（网格用） | `DFX/Modules/M_SpriteAtlasSize.dfm` | `/AtlasFX/Modules/Sprite_Atlas_Size` | `dfx.ps1 build`（见 §14） |
 | 采样 | `Plugins/AtlasFX/DShader/M_FXAtlasSheet.dss` | `/AtlasFX/M_FXAtlasSheet` | 编辑器启动时自动编译（改完保存即生效） |
-| 系统 | `DFX/Effects/NS_AtlasDefAtk.dfs` | `/AtlasFX/Effects/NS_AtlasDefAtk` | `dfx.ps1 build` |
+| 系统（精灵） | `DFX/Effects/NS_AtlasDefAtk.dfs` | `/AtlasFX/Effects/NS_AtlasDefAtk` | `dfx.ps1 build` |
+| 系统（网格） | `DFX/Effects/NS_AtlasDefAtk_Mesh.dfs` | `/AtlasFX/Effects/NS_AtlasDefAtk_Mesh` | `dfx.ps1 build`（见 §14） |
+
+⚠️ **模块是编译时内联进系统的**：改完 `.dfm` 必须把用到它的 `.dfs` 一起重编，只重编模块不生效（§14.6-3）。
 
 **数据通道契约（DI → 材质）**：模块把三包数据写进 `Particles.DynamicMaterialParameter`
 （**注意第一个属性名没有数字**）→ 材质 `DynamicParameter` 索引 0 = 图集矩形 `(x,y,w,h)` 像素坐标；
@@ -383,8 +466,10 @@ UV = (整数格 + 格内UV) × (1/列数, 1/行数)
    （§4.2 的「画布还原」与「铺满」两条支路合并成了一套数学，材质不用开关）。
 2. ~~`Play_SpriteAtlas_Time` / `Play_SpriteAtlas_Frame` 两个变体~~ —— **已做**：
    合成一个模块，用 `PlayMode` 0/1/2 选帧来源（自写速率 / 生命长度自适应 / 直接给帧号）。
-3. **独立的 `SpriteAtlasSize` 模块**：把「面片尺寸跟随当前帧」从播放模块里拆出来，
-   给想自己写播放逻辑的人用。**（仍未做）**
+3. ~~独立的 `SpriteAtlasSize` 模块~~ —— **已做**（2026-10-04）：落地为 `/AtlasFX/Modules/Sprite_Atlas_Size`
+   （源 `DFX/Modules/M_SpriteAtlasSize.dfm`）。与当时设想的差异：不要 `Atlas` 输入（直接读播放模块
+   写好的 `Particles.SpriteSize`）、`Base Plane Size` 改叫 `MeshSize` 并**加了 `MinSize` 下限**、
+   多了 `DepthScale` 与 `MeshYaw`。网格渲染器路线必需（§4.2 ③、§14）。
 4. **GPU 模拟支持**：DI 的 `CanExecuteOnTarget` 目前只认 CPUSim。**（仍未做）**
 
 **会咬人的坑**：
@@ -455,3 +540,155 @@ pwsh -File Plugins/DreamFX/.skill/dfx.ps1 build DFX/Effects/NS_AtlasDefatk.dfs
 **注意 `CanvasRects` 的约定**：DI 烘出来的是 `(画布内 x, y, 帧宽, 帧高)`，
 而图集工具 `sequence.json` 的 `spriteSourceSize + sourceSize` 是「位置 + **画布尺寸**」的写法 ——
 两者不一样；脚本在手工兜底模式下按 DI 的约定生成。
+
+## 14. 网格渲染器（Mesh renderer）路线（2026-10-04 打通）
+
+**为什么要单独做一条线**：两个渲染器读的尺寸属性不同、面片朝向的来源也不同（§14.5）。
+网格渲染器能做精灵做不到的事 —— 拿任意网格当特效面片（刀光、模型、薄片 Cube）、
+跟着角色挂点一起旋转、用网格自己的 LOD 与材质槽；代价是**朝向和尺寸都得自己摆**。
+这一章把打通它踩到的坑与结论固化下来。
+
+### 14.1 新增的资产与文本源
+
+| 层 | 资产 | 文本源（人写的） |
+|---|---|---|
+| 尺寸 | `/AtlasFX/Modules/Sprite_Atlas_Size` | `DFX/Modules/M_SpriteAtlasSize.dfm` |
+| 示例系统 | `/AtlasFX/Effects/NS_AtlasDefAtk_Mesh` | `DFX/Effects/NS_AtlasDefAtk_Mesh.dfs` |
+
+示例系统的发射器 `DefAtkMesh` 与精灵版（`/AtlasFX/Effects/NS_AtlasDefAtk`）逐项对齐：
+同一个 DI、同一个播放模块、同一个材质，只多挂一个 `Sprite_Atlas_Size`，
+渲染器从 `SpriteRenderer` 换成 `MeshRenderer`，发射器 `LocalSpace = true`。
+⇒ 两版画面应当逐帧对得上，可以互为对照。
+
+### 14.2 渲染器配置（整块照抄）
+
+```
+MeshRenderer Mesh
+{
+    Meshes             = ["/ZDBridge/FX/FXDefault"];
+    OverrideMaterials  = ["/AtlasFX/M_FXAtlasSheet"];
+    bOverrideMaterials = true;      // ⚠️ 少这一行等于没配材质
+    bSubImageBlend     = false;     // 一帧一帧硬切
+    SortMode           = ViewDepth;
+    Bind CustomSorting -> Particles.NormalizedAge;
+    Bind Scale -> Particles.Scale;
+    Bind Color -> Particles.Color;
+
+    // FacingMode 故意不写 ⇒ 走默认 Default，见 §14.3
+}
+```
+
+三个必须知道的点：
+
+1. **网格渲染器没有 `Material` 字段**（`NiagaraMeshRendererProperties.h:196`
+   "If Override Material is not specified, the mesh's material is used."）。
+   挂自己的材质只能走**两个属性一起给**：`OverrideMaterials` 数组（`:273`）
+   **加上** `bOverrideMaterials` 开关（`:226`，界面上叫「启用材质重载」，构造函数默认 `false` ——
+   `NiagaraMeshRendererProperties.cpp:424`）。渲染时只看后者（`:917` / `:1140 if (bOverrideMaterials)`）
+   ⇒ **只给数组不勾选，数组被静默忽略**，画面上是网格自带材质（`FXDefault` 上是
+   `WorldGridMaterial` ⇒ 灰白棋盘格）。
+   ⚠️ DreamFX **只认识数组那个**；写 `Material = "..."` 会被**静默丢掉**
+   （它按反射找 `FObjectProperty "Material"`，网格渲染器上找不到，直接 `return true`，什么都不报）。
+2. **`bSubImageBlend = false`**：一帧一帧硬切，不做相邻子图插值。网格渲染器构造函数默认是 `true`
+   （`NiagaraMeshRendererProperties.cpp:426`）、版本升级路径又把它改成 `false`（`:603`），
+   新旧资产值不一样 ⇒ 显式写死省得随版本漂（`Leng刀光` 也是 `false`）。
+3. **`SubImageSize` 必须保持 `(1, 1)`**（同 §2：非等分图集靠材质自己算 UV）。
+
+### 14.3 朝向：`FacingMode` 与 `MeshYaw` 必须配对（本次最大的坑）
+
+| 渲染器 `FacingMode` | 模块 `MeshYaw` | 结果 |
+|---|---|---|
+| **不写**（= 默认 `Default`） | **`-90.0`** | ✅ **本工程用这套**：网格保持局部朝向、可以被特效旋转，面法线由 `MeshYaw` 摆到相机方向 |
+| `CameraPlane` | `0.0` | ✅ 也能看见：朝向矩阵每帧把面片摆正对相机，但**特效永远转不动它** |
+| `CameraPlane` | `-90.0` | ❌ 朝向矩阵已经摆正了，多出来的 -90 又转 90° ⇒ 侧对镜头 ⇒ **完全看不见**，且引擎不报任何错 |
+| 不写（`Default`） | `0.0` | ❌ 面片保持局部朝向（法线 Y）⇒ 对沿 X 轴看的相机是侧对 ⇒ 看不见 |
+
+引擎依据（`D:\UnrealEngine-5.8.2\Engine\Plugins\FX\Niagara\Shaders\Private\NiagaraMeshParticleUtils.ush`）：
+
+- `:365 if (FacingMode != MESH_FACING_DEFAULT)` —— 只有非 `Default` 才算并乘上朝向矩阵；
+- `:369 SRT.Rotation = mul(SRT.Rotation, FacingMat)` —— 朝向矩阵叠加在**粒子自身旋转之后** ⇒ **覆盖**它；
+- `:262 FacingDir = -CameraForwardDir`、`:305 RefVector = Params.CameraUpDir`（仅 `CameraPlane` 用）
+  ⇒ `CameraPlane` / `CameraPosition` / `Velocity` 三种模式都是"每帧拿相机重建朝向"。
+
+⇒ **`CameraPlane` 下 `Particles.MeshOrientation` 写了也白写**（特效无法旋转网格）；
+**`Default` 下完全不套朝向矩阵，网格完全听特效的**。2D 特效要的是后者。
+另外 `ENiagaraMeshFacingMode` 的枚举说明也写明了这点（`NiagaraMeshRendererProperties.h:22-34`：
+`CameraPosition` = "Has the mesh local-space X-axis point towards the camera's position"）。
+
+**本工程的轴事实**（FBX 结构 + 实测定死，与 §14.3 表格配套使用）：
+
+- `/ZDBridge/FX/FXDefault`（源文件 `Plugins/ZDBridge/Content/FX/FXDefault.fbx`）：
+  **面法线在局部 Y 轴上**、宽沿局部 X（92.8）、高沿局部 Z（64.0）、**轴心在底边**（局部 Z = 0）。
+- 本工程 2D 相机**沿 X 轴看**。旁证：`/Game/GameActor2D/SAO_Kirito/ExAsset/Leng刀光` 里
+  `AddVelocity` 的速度是 `(0, -500, 0)` —— 特效沿 Y 飞，说明屏幕水平方向是 Y、相机沿 X。
+- ⇒ 面法线要从 Y 转到 X ⇒ **`MeshYaw = -90.0`**。
+  默认值写在模块里（`M_SpriteAtlasSize.dfm`），系统侧也**显式传** `MeshYaw = -90.0`；
+  **不要透传 `User.MeshYaw`** —— 重编不会重置用户参数的存量值，旧值会把面片转歪。
+- 换成作者化朝向正确的工程面片（法线 X、宽 Y、高 Z）时改回 `0.0`；画面左右镜像就把符号翻过来（`+90`）。
+
+### 14.4 `LocalSpace = true` 的用途
+
+发射器的 `Settings = { LocalSpace = true; }`（`Leng刀光` 同样这么配）——
+**用户原话：「本地空间是为了让 mesh 可以旋转」**。作用有两层：
+
+1. 粒子在发射器局部空间里模拟 ⇒ 特效挂到角色挂点上时，面片跟着挂点走，不会被世界坐标"钉住"；
+2. 配合 `FacingMode = Default` + `Particles.MeshOrientation`，**特效能自己转面片**
+   （旋转 Niagara 组件，面片跟着一起转）。
+
+⚠️ 第 2 条**只有 `Default` 模式下成立** —— `CameraPlane` 会在每帧覆盖掉 `MeshOrientation`（§14.3）。
+
+### 14.5 网格与精灵的差异速查
+
+| 项 | 网格渲染器 | 精灵渲染器 |
+|---|---|---|
+| 按粒子尺寸属性 | `Particles.Scale`（`ScaleBinding`，`NiagaraMeshRendererProperties.h:332`） | `Particles.SpriteSize`（`SpriteSizeBinding`，`NiagaraSpriteRendererProperties.h:305`） |
+| 朝向来源 | 网格自带朝向 + `Particles.MeshOrientation`（Quat） | 渲染器的朝向模式（`FacingMode` / 对齐方式 / 相机） |
+| 材质怎么挂 | `OverrideMaterials` **+** `bOverrideMaterials` | `Material` / 材质数组 |
+| 动态材质参数通路 | `DynamicMaterialBinding/1/2/3Binding` → VF `DynamicParam0-3`（`NiagaraMeshRendererProperties.cpp:725-728`） | 同构（`NiagaraSpriteRendererProperties.cpp:355-358`） |
+| 左右镜像 | **与精灵相反**：`NiagaraMeshVertexFactory.ush:587 CameraUpDir = ResolvedView.ViewUp` | `NiagaraSpriteVertexFactory.ush:557 CameraUp = **-**ResolvedViewUp` |
+
+- **动态材质参数索引 0/1/2/3 在网格上完全可用**：两个顶点工厂的参数通路结构一致
+  （`NiagaraMeshVertexFactory.ush:106-115 / :293-305 / :521-530 / :792-801` 对
+  `NiagaraSpriteVertexFactory.ush:130-133 / :359-368 / :955-958`）；
+  `MaterialTemplate.ush:302-349 GetDynamicParameter(...)` 按索引取位段
+  （索引 0 = 位 `0x0001-0x0008`、1 = `0x0010-0x0080`、2 = `0x0100-0x0800`、3 = `0x1000-0x8000`）。
+  有效位掩码由渲染器算：`NiagaraMeshRendererProperties.cpp:763-771 MaterialParamValidMask = GetDynamicParameterCombinedChannelMask(...)`；
+  而 `NiagaraRendererProperties.cpp:785-809` → `:760-783 GetDynamicParameterChannelMask` 在找不到
+  "限制通道"的静态变量时**默认返回 `0xf`（四个通道全有效）** ⇒ 本项目这种"模块直接写属性"的用法
+  不会掉进"掩码为 0 ⇒ 材质拿到默认值"的坑。
+  （`Leng刀光` 只写索引 0、`CommnMet_1` 只读索引 0，所以**索引 1/2 在网格上是本项目第一次实测**，结果通过。）
+- `Particles.MeshOrientation` 是引擎标准属性（`Quat` 类型，默认 `0,0,0,1`，
+  `NiagaraConstants.cpp:301/343/444/578`），DreamFX 能解析并写入。
+
+### 14.6 这条线踩过的坑（收口）
+
+1. **朝向配错 = 静默消失**：最初是 `CameraPlane` + `MeshYaw = -90`，面片被转成侧对镜头 ⇒
+   什么都看不见，而**引擎不报任何错、日志一个字都没有**。排查时极易误判成"材质坏了 / 特效没生成"。
+   配合 §14.3 的配对表逐项核对。
+2. **`Particles.Scale` 为 0 = 静默消失**（同样不报错）：源头是 `Particles.SpriteSize` 是 0。
+   现在由 `Sprite_Atlas_Size` 的 `MinSize` 下限兜住（§4.2 ③）。
+3. **模块是内联的**：Niagara 系统在 `AddModule` 时把模块图**内联**进自己的脚本
+   ⇒ **改完 `.dfm` 必须重编 `.dfs` 才生效**，只重编模块不够。
+   这一条会让"我明明改了怎么没反应"反复出现（本次 `MinSize` 下限迟迟没进系统就是它）。
+4. **重建过的系统资产可能带着 `Enabled` 状态**：三个临时对照发射器在资产里是 `Enabled = false`
+   （源码里从来没写过这个属性），于是"四个发射器全都看不见"被误判成**回归** ——
+   其实是三个压根没跑。**多发射器系统排查前先确认每个发射器都是启用的**；
+   关键发射器建议在源码里显式写 `Enabled = true;`。
+5. **材质编辑器预览是空的**：预览里没有粒子数据 ⇒ 三个动态参数全 0 ⇒ 正常路径全透明。
+   这是 §10.2 加兜底的直接原因；看到"整张图集"就说明走的是兜底路径。
+
+### 14.7 当时用的排查手法（可复用）
+
+"什么都看不见"且**没有任何报错**时，用**对照发射器把变量一刀切开**比读日志有用得多：
+
+| 发射器 | 材质 | 模块 | 回答的问题 |
+|---|---|---|---|
+| 主发射器 | `M_FXAtlasSheet` | 播放 + 尺寸 | 目标本身 |
+| 对照 A | 工程现成的 `/Game/GameActor2D/SAO_Kirito/ExAsset/CommnMet_4`（`Leng刀光` 用的那张） | 无 | 渲染器 + 网格 + 缩放这条路通不通 |
+| 对照 B | `M_FXAtlasSheet` 的**纯色打点版** | 无 | 材质在网格粒子上画不画得出来 |
+| 对照 C | 同 B | 只挂尺寸模块 | 是不是尺寸模块的问题 |
+
+再配一版**UV 探针材质**（红 = `TexCoord.x`、绿 = `TexCoord.y`、蓝 = 动态参数是否到达），
+一次就能同时读出"网格 UV 是不是 0..1"和"三个动态参数到没到"。实测结论：
+网格的 `TexCoord` 正常落在 0..1、动态参数也确实送达 ⇒ 数据通路本身是好的，问题只在朝向。
+排查完记得删掉对照组，并把材质换回正式版（正式版函数体在 `.dss` 文件头注释里留了备份）。
