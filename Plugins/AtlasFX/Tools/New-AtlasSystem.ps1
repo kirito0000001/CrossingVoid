@@ -49,9 +49,10 @@ param(
     [string]$Flipbook,
     [string]$Texture,
     [string]$Material = '/AtlasFX/M_FXAtlasSheet',
-    [double]$SizeScale = 0.1,
+    [double]$SizeScale = 1.0,
     [double]$PlayRate = 1.0,
     [double]$StartFrame = 0.0,
+    [double]$FitFrame = 0.0,
     [string]$Out,
     [switch]$Force,
     [switch]$DryRun,
@@ -163,7 +164,9 @@ System(Name="Effects/NS_Atlas$Atlas", Root="Plugin.AtlasFX")
         DI<SpriteAtlas> Atlas = "$diEscaped";
 
         float SizeScale  = $(Fmt $SizeScale) [ Group="图集"; SortPriority=10;
-            Description="1 像素对应多少世界单位（0.1 = 1 毫米）。面片尺寸 = 当前帧尺寸 × 这个值。" ];
+            Description="1 像素对应多少世界单位（1.0 = 1 厘米，即 UE 默认单位）。面片尺寸 = 目标尺寸 × 这个值。" ];
+        float FitFrame   = $(Fmt $FitFrame) [ Group="图集"; SortPriority=12;
+            Description="面片取哪个尺寸：0 = 画布还原（面片 = 整块画布，帧放回它在画布里的位置，默认）；1 = 铺满（面片 = 当前帧自己的矩形）。" ];
         float PlayMode   = 0.0 [ Group="图集"; SortPriority=15;
             Description="播放模式：0 = 按 Flipbook 帧率（默认）；1 = 按粒子生命长度播完一遍；2 = 用 FrameIndex 直接指定帧号。" ];
         float StartFrame = $(Fmt $StartFrame) [ Group="图集"; SortPriority=20;
@@ -213,6 +216,7 @@ System(Name="Effects/NS_Atlas$Atlas", Root="Plugin.AtlasFX")
                 Atlas      = User.Atlas,
                 PlayMode   = User.PlayMode,
                 SizeScale  = User.SizeScale,
+                FitFrame   = User.FitFrame,
                 StartFrame = User.StartFrame,
                 FrameIndex = User.FrameIndex,
                 PlayRate   = User.PlayRate
@@ -228,6 +232,10 @@ System(Name="Effects/NS_Atlas$Atlas", Root="Plugin.AtlasFX")
             // 数据接口给的是任意矩形，不是等分网格，所以 Sub Image Size 必须保持 (1,1)，
             // 让 UV 原样 0..1 交给材质函数去换算。
             SubImageSize = (1, 1);
+            // ⚠️ 千万不要给 Particles.SubImageIndex 赋值：渲染器会把它当子图网格坐标加进
+            // 材质读到的 TexCoord.y（SubImageSize=(1,1) 时偏移量正好等于帧号），
+            // 症状是「第 0 帧正常、第 1 帧起全空」。采样全在材质里自己算，它必须保持 0。
+            // 详见 Plugins/AtlasFX/DESIGN.md §8 第 7 条。
 
             Bind SpriteSize -> Particles.SpriteSize;
             Bind Color      -> Particles.Color;

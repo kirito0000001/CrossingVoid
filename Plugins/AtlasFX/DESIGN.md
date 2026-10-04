@@ -47,10 +47,10 @@ UV = (整数格 + 格内UV) × (1/列数, 1/行数)
             ▼
   Module Script: Play Sprite Atlas           播放：算第几帧
             │  速率 / 循环 / 起始帧 / 逐粒子相位 / 暂停 / 倒放 / 时间源开关
-            │  写 Particles.DynamicMaterialParameter1 = 图集矩形(像素 x,y,w,h)
-            │  写 Particles.DynamicMaterialParameter2 = 画布矩形(像素 x,y,w,h)
-            │  写 Particles.DynamicMaterialParameter3 = (贴图W, 贴图H, 画布W, 画布H)
-            │  写 Particles.SubImageIndex = 当前帧号（调试 / 顺带让自带 SubUV 可用）
+            │  写 Particles.DynamicMaterialParameter  = 图集矩形(像素 x,y,w,h)  → 材质索引 0
+            │  写 Particles.DynamicMaterialParameter1 = 画布矩形(像素 x,y,w,h)  → 材质索引 1
+            │  写 Particles.DynamicMaterialParameter2 = (贴图W, 贴图H, 画布W, 画布H) → 材质索引 2
+            │  （**不写 SubImageIndex** —— 写了精灵渲染器会把帧号掺进 TexCoord，见 §8-7）
             ▼
   Material Function: MF_SpriteAtlasUV        采样：矩形 → UV
                对齐方式（画布还原 / 铺满）+ 缩放 + 偏移
@@ -79,18 +79,21 @@ UV = (整数格 + 格内UV) × (1/列数, 1/行数)
 
 ### 4.1 逐粒子通道怎么分配
 
-引擎只给了**三个**每粒子 `float4`（`Source\Niagara\Private\NiagaraModule.cpp:449-451` 只定义
-`Particles.DynamicMaterialParameter1/2/3`），且 **Niagara 属性名从 1 起、材质 `Dynamic Parameter` 的 Index 从 0 起**：
+引擎只给了**三个**每粒子 `float4`，且属性名与材质 `Dynamic Parameter` 的 Index **差一位**：
+第一个属性名 `Particles.DynamicMaterialParameter` **没有数字**（引擎 `NiagaraModule.cpp:448-451`），
+它对应的正是材质的**索引 0**。
 
-| 属性 | 材质 Index | 内容 |
+| 属性（Niagara 侧） | 材质 Index | 内容 |
 |---|---|---|
-| `Particles.DynamicMaterialParameter1` | 0 | 图集矩形（像素 x,y,w,h） |
-| `Particles.DynamicMaterialParameter2` | 1 | 画布矩形（像素 x,y,w,h，画布还原模式用） |
-| `Particles.DynamicMaterialParameter3` | 2 | 尺寸包 = (贴图W, 贴图H, 画布W, 画布H) |
+| `Particles.DynamicMaterialParameter` | 0 | 图集矩形（像素 x,y,w,h） |
+| `Particles.DynamicMaterialParameter1` | 1 | 画布矩形（像素 x,y,w,h，画布还原模式用） |
+| `Particles.DynamicMaterialParameter2` | 2 | 尺寸包 = (贴图W, 贴图H, 画布W, 画布H) |
 
-链路（源码逐段核过）：`NiagaraSpriteRendererProperties.cpp:355-357` / `NiagaraMeshRendererProperties.cpp:725-727`
+⚠️ 写成 `1/2/3` 会整体错位一位 ⇒ 材质读到默认 `(1,1,1,1)` ⇒ UV 算飞 ⇒ **全透明，什么都看不见**（踩过，见 §8-7）。
+
+链路（源码逐段核过）：`NiagaraSpriteRendererProperties.cpp:303-306`（Mesh 渲染器同理）
 把渲染器的 `DynamicMaterialBinding` / `DynamicMaterial1Binding` / `DynamicMaterial2Binding`
-（默认分别绑 `SYS_PARAM_PARTICLES_DYNAMIC_MATERIAL_PARAM` / `_1` / `_2`，即 DMP1/2/3）塞进 VF 的
+（默认分别绑上面这三个属性）塞进 VF 的
 `MaterialParam0/1/2` → `NiagaraRendererSprites.cpp:735-749` 写进 `DefaultDynamicMaterialParameter0/1/2`
 → `Shaders\Private\MaterialTemplate.ush:302-330` 里 `Dynamic Parameter` 的 Index 0/1/2 读的正是这三个。
 
@@ -122,16 +125,18 @@ UV = (整数格 + 格内UV) × (1/列数, 1/行数)
 - **MVP 没有（留第二步）**：`End Frame` / `Loop` 开关 / "一个生命周期播 N 遍" / `Pause` / 倒放 / 按粒子 ID 哈希的确定性随机起帧。
   现在三种模式都是**恒定回绕**（`Raw - floor(Raw/N)*N`，负值也落在 `[0,N)`），
   "一炮只播一遍"靠 `Lifetime = 帧数 / 帧率` 实现
-- 输出：`Particles.DynamicMaterialParameter` / `...Parameter1` / `...Parameter2` + `Particles.SubImageIndex`（见 §4.1）
+- 输出：`Particles.DynamicMaterialParameter` / `...Parameter1` / `...Parameter2`（见 §4.1）
   - ⚠️ **第一个属性名没有数字**（引擎 `NiagaraModule.cpp:448-451`），它对应材质 `DynamicParameter` 的**索引 0**，
     `...Parameter1` → 索引 1、`...Parameter2` → 索引 2（`NiagaraSpriteRendererProperties.cpp:355-358` 做映射）。
     写成 `1/2/3` 会整体错位一位，材质读到默认值 `(1,1,1,1)` ⇒ UV 算飞 ⇒ **全透明，什么都看不见**（踩过）
 
-**③ 尺寸模块 `Sprite Atlas Size`（可选）**
+**③ 尺寸模块 `Sprite Atlas Size`（可选）—— 2026-10-04 状态：仍未做**
 
-- 输入 `Atlas` + `Base Plane Size`(默认 `0.928, 0.640`，即 `FXDefault` 面片尺寸) +
+- 「面片尺寸跟随帧」目前由播放模块的 `Size Scale` / `Fit Frame` 兼任（见 §4.2 ②）
+- 原设计：输入 `Atlas` + `Base Plane Size`(默认 `0.928, 0.640`，即 `FXDefault` 面片尺寸) +
   `Fit Frame`(**float 0/1，不是 bool** —— 避开 Select 节点，直接喂 `Lerp`) + `Uniform Scale`
-- 帧号直接读 `Particles.SubImageIndex`（播放模块写的），不用再拉一根线进来
+- 原设计里「帧号直接读 `Particles.SubImageIndex`」**已作废**：那个属性绝对不能写（§8-7）。
+  真要做，帧号得从播放模块的输出引脚拉过来，或者自己再算一遍。
 - 输出 `Particles.Scale = (目标W / BaseW, 1, 目标H / BaseH)`
   - `Fit Frame = 0` → 目标 = 画布尺寸（**画布还原**模式用）
   - `Fit Frame = 1` → 目标 = 该帧的图集矩形尺寸（**铺满**模式用）
@@ -365,20 +370,22 @@ UV = (整数格 + 格内UV) × (1/列数, 1/行数)
 | 采样 | `Plugins/AtlasFX/DShader/M_FXAtlasSheet.dss` | `/AtlasFX/M_FXAtlasSheet` | 编辑器启动时自动编译（改完保存即生效） |
 | 系统 | `DFX/Effects/NS_AtlasDefAtk.dfs` | `/AtlasFX/Effects/NS_AtlasDefAtk` | `dfx.ps1 build` |
 
-**数据通道契约（DI → 材质）**：`Particles.DynamicMaterialParameter1` = 图集矩形 `(x,y,w,h)` 像素坐标；
-`2` = 画布矩形；`3` = 尺寸包 `(贴图W, 贴图H, 画布W, 画布H)`。
-材质只用 0 和 2（`Sizes.xy` 当除数把像素 UV 归一化）。渲染器侧的绑定字段是
-`DynamicMaterial1Binding/2/3Binding`（5.8 的命名），默认已指向这三个属性。
+**数据通道契约（DI → 材质）**：模块把三包数据写进 `Particles.DynamicMaterialParameter`
+（**注意第一个属性名没有数字**）→ 材质 `DynamicParameter` 索引 0 = 图集矩形 `(x,y,w,h)` 像素坐标；
+`...Parameter1` → 索引 1 = 画布矩形；`...Parameter2` → 索引 2 = 尺寸包 `(贴图W, 贴图H, 画布W, 画布H)`。
+材质三个索引都读。渲染器侧的绑定字段是 `DynamicMaterialBinding/1/2/3Binding`，
+默认已指向这四个属性（`NiagaraSpriteRendererProperties.cpp:303-306`）。
+⚠️ 名字写成 `1/2/3` 会整体错位一位 ⇒ 材质读到默认 `(1,1,1,1)` ⇒ UV 算飞 ⇒ 全透明（踩过）。
 
-**用户 2026-10-04 决定「先记录进文档、以后再做」的功能**（§4.2 设计稿里有、当前实现没有）：
+**用户 2026-10-04 决定「先记录进文档、以后再做」的功能**（§4.2 设计稿里有、当时实现没有）：
 
-1. **画布还原模式**：数据其实已经通了（DMP2 就是画布矩形），缺的是材质里把「按画布对齐」那条支路接上 ——
-   现在材质只做「按帧矩形拉伸到面片」。
-2. **`Play_SpriteAtlas_Time` / `Play_SpriteAtlas_Frame` 两个变体**：现在只有年龄驱动的一种。
-   模块体只差第一行（`Particles.NormalizedAge` 换成引擎时间或一个帧号输入）。
+1. ~~画布还原模式~~ —— **已做**：材质现在按画布矩形做遮罩，`FitFrame` 开关在模块里
+   （§4.2 的「画布还原」与「铺满」两条支路合并成了一套数学，材质不用开关）。
+2. ~~`Play_SpriteAtlas_Time` / `Play_SpriteAtlas_Frame` 两个变体~~ —— **已做**：
+   合成一个模块，用 `PlayMode` 0/1/2 选帧来源（自写速率 / 生命长度自适应 / 直接给帧号）。
 3. **独立的 `SpriteAtlasSize` 模块**：把「面片尺寸跟随当前帧」从播放模块里拆出来，
-   给想自己写播放逻辑的人用。
-4. **GPU 模拟支持**：DI 的 `CanExecuteOnTarget` 目前只认 CPUSim。
+   给想自己写播放逻辑的人用。**（仍未做）**
+4. **GPU 模拟支持**：DI 的 `CanExecuteOnTarget` 目前只认 CPUSim。**（仍未做）**
 
 **会咬人的坑**：
 

@@ -494,20 +494,6 @@ void UNiagaraDataInterfaceSpriteAtlas::GetFrameCountVM(FVectorVMExternalFunction
 	FNDIOutputParam<int32> OutFrameCount(Context);
 	const int32 NumFrames = FrameRects.Num();
 
-	// 诊断用（2026-10-04）：定位「编辑器参数面板里有 6 条矩形、运行时却拿不到」的问题。
-	// 只在头几次调用时打印，避免每帧刷屏（一粒子一帧时大约 8 帧打完）。
-	static int32 GFrameCountLogCount = 0;
-	if (GFrameCountLogCount < 8)
-	{
-		++GFrameCountLogCount;
-		UE_LOG(LogAtlasFX, Warning,
-			TEXT("[AtlasFX 诊断] GetFrameCountVM 第 %d 次：FrameRects=%d CanvasRects=%d TextureSize=(%d,%d) CanvasSize=(%d,%d) Fps=%.2f Flipbook=%s 本DI对象=%s"),
-			GFrameCountLogCount, NumFrames, CanvasRects.Num(),
-			TextureSize.X, TextureSize.Y, CanvasSize.X, CanvasSize.Y, Fps,
-			Flipbook ? *Flipbook->GetPathName() : TEXT("<null>"),
-			*GetPathName());
-	}
-
 	for (int32 InstanceIdx = 0; InstanceIdx < Context.GetNumInstances(); ++InstanceIdx)
 	{
 		OutFrameCount.SetAndAdvance(NumFrames);
@@ -581,10 +567,6 @@ void UNiagaraDataInterfaceSpriteAtlas::GetFrameParamsVM(FVectorVMExternalFunctio
 	FNDIOutputParam<FVector4f> OutCanvasRect(Context);
 	FNDIOutputParam<FVector4f> OutSizes(Context);
 
-	// 诊断用（2026-10-04）：打印「收到的帧号 + 解析出的矩形」，用于定位
-	// 「只有第 0 帧能显示」到底卡在帧号不推进，还是矩形数据不对。
-	static int32 GFrameParamsLogCount = 0;
-
 	const FVector4f Sizes(
 		static_cast<float>(TextureSize.X),
 		static_cast<float>(TextureSize.Y),
@@ -596,22 +578,6 @@ void UNiagaraDataInterfaceSpriteAtlas::GetFrameParamsVM(FVectorVMExternalFunctio
 		const int32 FrameIndex = FMath::FloorToInt32(InFrameIndex.GetAndAdvance());
 		const FVector4 AtlasRect = GetRectClamped(FrameRects, FrameIndex);
 		const FVector4 CanvasRectValue = CanvasRects.Num() > 0 ? GetRectClamped(CanvasRects, FrameIndex) : AtlasRect;
-
-		// 前 12 次全打（覆盖开局那一轮帧循环），之后每 120 次打一条（约 2 秒一次），
-		// 上限 120 条 —— 这样编辑器启动时消耗掉的那几次不会把窗口用光。
-		static int32 GFrameParamsCallCount = 0;
-		++GFrameParamsCallCount;
-		const bool bLogThisCall = (GFrameParamsCallCount <= 12) || (GFrameParamsCallCount % 120 == 0);
-		if (bLogThisCall && GFrameParamsLogCount < 120)
-		{
-			++GFrameParamsLogCount;
-			UE_LOG(LogAtlasFX, Warning,
-				TEXT("[AtlasFX 诊断] GetFrameParamsVM 第 %d 次调用（第 %d 条日志）：收到帧号=%d（帧表 %d 条）→ 图集矩形=(%.1f,%.1f,%.1f,%.1f) 画布矩形=(%.1f,%.1f,%.1f,%.1f) Sizes=(%.0f,%.0f,%.0f,%.0f)"),
-				GFrameParamsCallCount, GFrameParamsLogCount, FrameIndex, FrameRects.Num(),
-				AtlasRect.X, AtlasRect.Y, AtlasRect.Z, AtlasRect.W,
-				CanvasRectValue.X, CanvasRectValue.Y, CanvasRectValue.Z, CanvasRectValue.W,
-				Sizes.X, Sizes.Y, Sizes.Z, Sizes.W);
-		}
 
 		OutAtlasRect.SetAndAdvance(FVector4f(
 			static_cast<float>(AtlasRect.X), static_cast<float>(AtlasRect.Y),
