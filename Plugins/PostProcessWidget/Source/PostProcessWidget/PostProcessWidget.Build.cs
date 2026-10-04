@@ -14,14 +14,12 @@ public class PostProcessWidget : ModuleRules
 
 		PrivateIncludePaths.AddRange(
 				new string[] {
-					"../../../../Source/Runtime/Engine/",
-					"../../../../Source/Runtime/RHI/",
 					// ... add other private include paths required here ...
 				}
 				);
         PrivateIncludePaths.AddRange(
                 new string []{
-                    // ¡­ add other private include paths required here ¡­
+                    // ï¿½ï¿½ add other private include paths required here ï¿½ï¿½
                     Path.Combine(GetModuleDirectory("Renderer"), "Internal"),
                 }
                 );

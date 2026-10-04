@@ -48,3 +48,13 @@ compile_commands.json
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# 第三方插件：DreamShader / DreamFX 各自是独立 git 仓库（fork 自 TypeDreamMoon），
+# 不要塞进本仓库；需要时按 Plugins/AtlasFX/DESIGN.md §11 的地址重新 clone
+/Plugins/DreamShader/
+/Plugins/DreamFX/
+
+# DreamShader 的反编译镜像：`dsc.ps1 decompile` 的产物，
+# 会被自动编译成 /Game/Decompiled/... 下的临时资产，不是源文件
+DShader/Decompiled/
+Content/Decompiled/

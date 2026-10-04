@@ -20,6 +20,8 @@ const FName UNiagaraDataInterfaceSpriteAtlas::GetCanvasRectName(TEXT("GetCanvasR
 const FName UNiagaraDataInterfaceSpriteAtlas::GetCanvasSizeName(TEXT("GetCanvasSize"));
 const FName UNiagaraDataInterfaceSpriteAtlas::GetTextureSizeName(TEXT("GetTextureSize"));
 const FName UNiagaraDataInterfaceSpriteAtlas::GetFpsName(TEXT("GetFps"));
+const FName UNiagaraDataInterfaceSpriteAtlas::GetFrameParamsName(TEXT("GetFrameParams"));
+const FName UNiagaraDataInterfaceSpriteAtlas::WrapFrameName(TEXT("WrapFrame"));
 
 UNiagaraDataInterfaceSpriteAtlas::UNiagaraDataInterfaceSpriteAtlas(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -47,6 +49,13 @@ void UNiagaraDataInterfaceSpriteAtlas::RefreshFromSource()
 	FrameRects.Reset();
 	CanvasRects.Reset();
 	Fps = ManualFps;
+
+	// 记下这次烘表对应的「源」：下次加载时用它判断要不要自动重烘（见 PostLoad）。
+	BakedSourceSignature = ComputeSourceSignature();
+
+	// 贴图尺寸要留退路：无 RHI 的进程里 GetSizeX() 直接返回 0（Texture2D.cpp:349-363），
+	// 所以绝不能把 0 写进去 —— 材质用 Sizes.xy 做 UV 归一化，0 会让 UV 变 NaN（面片全透明）。
+	const FIntPoint PreviousTextureSize = TextureSize;
 	TextureSize = FIntPoint(1, 1);
 
 #if WITH_EDITOR
@@ -122,6 +131,24 @@ void UNiagaraDataInterfaceSpriteAtlas::RefreshFromSource()
 		if (Texture)
 		{
 			TextureSize = FIntPoint(Texture->GetSizeX(), Texture->GetSizeY());
+			if (TextureSize.X <= 0 || TextureSize.Y <= 0)
+			{
+				// 无 RHI（headless build / 命令行）时退回「导入尺寸」：Texture2D.cpp:638-645 在
+				// 非 cooked 包里返回源图尺寸，正是图集贴图的像素尺寸。
+				TextureSize = Texture->GetImportedSize();
+			}
+			if (TextureSize.X <= 0 || TextureSize.Y <= 0)
+			{
+				TextureSize = PreviousTextureSize;
+				UE_LOG(LogAtlasFX, Warning,
+					TEXT("%s：取不到图集贴图尺寸（%s），沿用上次烘好的 %dx%d。"),
+					*GetName(), *Texture->GetPathName(), TextureSize.X, TextureSize.Y);
+			}
+		}
+		else
+		{
+			// Flipbook 里一帧都没拿到贴图：沿用上次的值，别把材质搞成 NaN。
+			TextureSize = PreviousTextureSize;
 		}
 		CanvasSize = ResolvedCanvasSize;
 		return;
@@ -160,6 +187,84 @@ void UNiagaraDataInterfaceSpriteAtlas::PostEditChangeProperty(FPropertyChangedEv
 	}
 }
 #endif
+
+// ---------------------------------------------------------------------------- 自动烘表（帧表自动化）
+
+void UNiagaraDataInterfaceSpriteAtlas::PostLoad()
+{
+	Super::PostLoad();
+
+	// 资产里只留一行 Flipbook，帧表在加载时自己算出来。只做增量判断（签名不一致才动手），
+	// 所以正常情况下加载不会反复标脏。标脏是必要的：这次烘的结果要能跟着资产存下去，
+	// 打包后的游戏读到的就是存下来的表（运行时不需要 Paper2D 参与）。
+	if (NeedsRebakeFromSource())
+	{
+		RefreshFromSource();
+		MarkPackageDirty();
+
+		UE_LOG(LogAtlasFX, Log,
+			TEXT("%s：加载时自动重烘帧表 —— %d 帧 / %.2f fps / 画布 %dx%d / 贴图 %dx%d（源 = %s）"),
+			*GetName(), FrameRects.Num(), Fps, CanvasSize.X, CanvasSize.Y, TextureSize.X, TextureSize.Y,
+			Flipbook ? *Flipbook->GetPathName() : TEXT("<兜底>"));
+	}
+}
+
+FString UNiagaraDataInterfaceSpriteAtlas::ComputeSourceSignature() const
+{
+	// 兜底数据源：矩形本身就存在资产里，永远不会「过期」。
+	if (!Flipbook)
+	{
+		return FString();
+	}
+
+#if WITH_EDITOR
+	// 烘表算法版本：改了烘表逻辑就 +1，强制所有资产在下次加载时重烘一次。
+	// （v2 = 贴图尺寸在无 RHI 进程里退回导入尺寸，避免写出 0x0。）
+	const int32 BakeVersion = 2;
+
+	FString Signature = FString::Printf(TEXT("v%d|fb:%s|%d|%.4f"),
+		BakeVersion, *Flipbook->GetPathName(), Flipbook->GetNumKeyFrames(), Flipbook->GetFramesPerSecond());
+
+	// 每帧的 Sprite 也要进签名：换图 / 重排图集时帧数和帧率可能都不变。
+	const int32 NumFrames = Flipbook->GetNumKeyFrames();
+	for (int32 Index = 0; Index < NumFrames; ++Index)
+	{
+		const UPaperSprite* Sprite = Flipbook->GetKeyFrameChecked(Index).Sprite;
+		if (!Sprite)
+		{
+			Signature += TEXT("|null");
+			continue;
+		}
+
+		const FVector2D AtlasPos = Sprite->GetSourceUV();
+		const FVector2D FrameSize = Sprite->GetSourceSize();
+		const FVector2D TrimOrigin = Sprite->GetOriginInSourceImageBeforeTrimming();
+		Signature += FString::Printf(TEXT("|%s@%.2f,%.2f+%.2fx%.2f>%.2f,%.2f"),
+			*Sprite->GetPathName(), AtlasPos.X, AtlasPos.Y, FrameSize.X, FrameSize.Y, TrimOrigin.X, TrimOrigin.Y);
+	}
+	return Signature;
+#else
+	// 非编辑器构建读不到 Sprite 的源矩形（编辑器专用字段），签名退化成路径；
+	// 反正 NeedsRebakeFromSource() 在这种构建里恒 false，这个值只用于显示/调试。
+	return FString::Printf(TEXT("fb:%s"), *Flipbook->GetPathName());
+#endif
+}
+
+bool UNiagaraDataInterfaceSpriteAtlas::NeedsRebakeFromSource() const
+{
+#if WITH_EDITOR
+	if (!Flipbook)
+	{
+		// 没绑 Flipbook：兜底数据就是权威数据，不重烘（重烘反而会把它清空）。
+		return false;
+	}
+	return BakedSourceSignature != ComputeSourceSignature();
+#else
+	// 运行时绝不重烘：RefreshFromSource 的 Flipbook 分支整段在 WITH_EDITOR 里，
+	// 非编辑器构建跑一遍会把烘好的表清空。
+	return false;
+#endif
+}
 
 // ---------------------------------------------------------------------------- 通用
 
@@ -205,6 +310,34 @@ bool UNiagaraDataInterfaceSpriteAtlas::Equals(const UNiagaraDataInterface* Other
 		&& OtherTyped->ManualCanvasSize == ManualCanvasSize
 		&& OtherTyped->ManualFps == ManualFps
 		&& OtherTyped->RectInsetPixels == RectInsetPixels;
+}
+
+bool UNiagaraDataInterfaceSpriteAtlas::CopyToInternal(UNiagaraDataInterface* Destination) const
+{
+	if (!Super::CopyToInternal(Destination))
+	{
+		return false;
+	}
+
+	UNiagaraDataInterfaceSpriteAtlas* DestinationTyped = CastChecked<UNiagaraDataInterfaceSpriteAtlas>(Destination);
+
+	// 数据源（Flipbook 自动烘表 / 手工兜底）
+	DestinationTyped->Flipbook = Flipbook;
+	DestinationTyped->AtlasTexture = AtlasTexture;
+	DestinationTyped->ManualFrameRects = ManualFrameRects;
+	DestinationTyped->ManualCanvasRects = ManualCanvasRects;
+	DestinationTyped->ManualCanvasSize = ManualCanvasSize;
+	DestinationTyped->ManualFps = ManualFps;
+	DestinationTyped->RectInsetPixels = RectInsetPixels;
+
+	// 烘好的帧表 —— 运行时 VM 真正读的就是这几份
+	DestinationTyped->FrameRects = FrameRects;
+	DestinationTyped->CanvasRects = CanvasRects;
+	DestinationTyped->CanvasSize = CanvasSize;
+	DestinationTyped->TextureSize = TextureSize;
+	DestinationTyped->Fps = Fps;
+
+	return true;
 }
 
 #if WITH_EDITORONLY_DATA
@@ -294,6 +427,21 @@ void UNiagaraDataInterfaceSpriteAtlas::GetFunctionsInternal(TArray<FNiagaraFunct
 		Sig.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("FPS")), LOCTEXT("GetFpsOut", "帧率"));
 		OutFunctions.Add(Sig);
 	}
+	{
+		// 一次调用拿齐材质要的三包数据：模块里只要一个节点 + 三个 Map Set。
+		FNiagaraFunctionSignature Sig = MakeSignature(GetFrameParamsName, LOCTEXT("GetFrameParamsDesc", "第 Frame Index 帧的全套数据：图集矩形、画布矩形、尺寸包（贴图W, 贴图H, 画布W, 画布H）。越界 clamp 到首/尾帧。"));
+		Sig.AddInput(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("Frame Index")), LOCTEXT("GetFrameParamsIn", "帧号（小数向下取整）"));
+		Sig.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec4Def(), TEXT("Atlas Rect")), LOCTEXT("GetFrameParamsOutAtlas", "图集矩形 (x,y,w,h) 像素 → 接 Dynamic Material Parameter 1"));
+		Sig.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec4Def(), TEXT("Canvas Rect")), LOCTEXT("GetFrameParamsOutCanvas", "画布矩形 (x,y,w,h) 像素 → 接 Dynamic Material Parameter 2"));
+		Sig.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec4Def(), TEXT("Sizes")), LOCTEXT("GetFrameParamsOutSizes", "(贴图W, 贴图H, 画布W, 画布H) → 接 Dynamic Material Parameter 3"));
+		OutFunctions.Add(Sig);
+	}
+	{
+		FNiagaraFunctionSignature Sig = MakeSignature(WrapFrameName, LOCTEXT("WrapFrameDesc", "把任意帧号回绕到 [0, 帧数) 区间（循环播放用）。"));
+		Sig.AddInput(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("Raw Frame")), LOCTEXT("WrapFrameIn", "原始帧号（可以是负数，也可以很大）"));
+		Sig.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("Frame")), LOCTEXT("WrapFrameOut", "回绕后的帧号"));
+		OutFunctions.Add(Sig);
+	}
 }
 #endif // WITH_EDITORONLY_DATA
 
@@ -325,6 +473,14 @@ void UNiagaraDataInterfaceSpriteAtlas::GetVMExternalFunction(const FVMExternalFu
 	{
 		OutFunc = FVMExternalFunction::CreateLambda([this](FVectorVMExternalFunctionContext& Context) { GetFpsVM(Context); });
 	}
+	else if (BindingInfo.Name == GetFrameParamsName)
+	{
+		OutFunc = FVMExternalFunction::CreateLambda([this](FVectorVMExternalFunctionContext& Context) { GetFrameParamsVM(Context); });
+	}
+	else if (BindingInfo.Name == WrapFrameName)
+	{
+		OutFunc = FVMExternalFunction::CreateLambda([this](FVectorVMExternalFunctionContext& Context) { WrapFrameVM(Context); });
+	}
 	else
 	{
 		UE_LOG(LogAtlasFX, Warning,
@@ -337,6 +493,20 @@ void UNiagaraDataInterfaceSpriteAtlas::GetFrameCountVM(FVectorVMExternalFunction
 {
 	FNDIOutputParam<int32> OutFrameCount(Context);
 	const int32 NumFrames = FrameRects.Num();
+
+	// 诊断用（2026-10-04）：定位「编辑器参数面板里有 6 条矩形、运行时却拿不到」的问题。
+	// 只在头几次调用时打印，避免每帧刷屏（一粒子一帧时大约 8 帧打完）。
+	static int32 GFrameCountLogCount = 0;
+	if (GFrameCountLogCount < 8)
+	{
+		++GFrameCountLogCount;
+		UE_LOG(LogAtlasFX, Warning,
+			TEXT("[AtlasFX 诊断] GetFrameCountVM 第 %d 次：FrameRects=%d CanvasRects=%d TextureSize=(%d,%d) CanvasSize=(%d,%d) Fps=%.2f Flipbook=%s 本DI对象=%s"),
+			GFrameCountLogCount, NumFrames, CanvasRects.Num(),
+			TextureSize.X, TextureSize.Y, CanvasSize.X, CanvasSize.Y, Fps,
+			Flipbook ? *Flipbook->GetPathName() : TEXT("<null>"),
+			*GetPathName());
+	}
 
 	for (int32 InstanceIdx = 0; InstanceIdx < Context.GetNumInstances(); ++InstanceIdx)
 	{
@@ -400,6 +570,74 @@ void UNiagaraDataInterfaceSpriteAtlas::GetFpsVM(FVectorVMExternalFunctionContext
 	for (int32 InstanceIdx = 0; InstanceIdx < Context.GetNumInstances(); ++InstanceIdx)
 	{
 		OutFps.SetAndAdvance(Value);
+	}
+}
+
+void UNiagaraDataInterfaceSpriteAtlas::GetFrameParamsVM(FVectorVMExternalFunctionContext& Context)
+{
+	// 输出顺序必须和 GetFunctionsInternal 里 AddOutput 的顺序一致。
+	FNDIInputParam<float> InFrameIndex(Context);
+	FNDIOutputParam<FVector4f> OutAtlasRect(Context);
+	FNDIOutputParam<FVector4f> OutCanvasRect(Context);
+	FNDIOutputParam<FVector4f> OutSizes(Context);
+
+	// 诊断用（2026-10-04）：打印「收到的帧号 + 解析出的矩形」，用于定位
+	// 「只有第 0 帧能显示」到底卡在帧号不推进，还是矩形数据不对。
+	static int32 GFrameParamsLogCount = 0;
+
+	const FVector4f Sizes(
+		static_cast<float>(TextureSize.X),
+		static_cast<float>(TextureSize.Y),
+		static_cast<float>(CanvasSize.X),
+		static_cast<float>(CanvasSize.Y));
+
+	for (int32 InstanceIdx = 0; InstanceIdx < Context.GetNumInstances(); ++InstanceIdx)
+	{
+		const int32 FrameIndex = FMath::FloorToInt32(InFrameIndex.GetAndAdvance());
+		const FVector4 AtlasRect = GetRectClamped(FrameRects, FrameIndex);
+		const FVector4 CanvasRectValue = CanvasRects.Num() > 0 ? GetRectClamped(CanvasRects, FrameIndex) : AtlasRect;
+
+		// 前 12 次全打（覆盖开局那一轮帧循环），之后每 120 次打一条（约 2 秒一次），
+		// 上限 120 条 —— 这样编辑器启动时消耗掉的那几次不会把窗口用光。
+		static int32 GFrameParamsCallCount = 0;
+		++GFrameParamsCallCount;
+		const bool bLogThisCall = (GFrameParamsCallCount <= 12) || (GFrameParamsCallCount % 120 == 0);
+		if (bLogThisCall && GFrameParamsLogCount < 120)
+		{
+			++GFrameParamsLogCount;
+			UE_LOG(LogAtlasFX, Warning,
+				TEXT("[AtlasFX 诊断] GetFrameParamsVM 第 %d 次调用（第 %d 条日志）：收到帧号=%d（帧表 %d 条）→ 图集矩形=(%.1f,%.1f,%.1f,%.1f) 画布矩形=(%.1f,%.1f,%.1f,%.1f) Sizes=(%.0f,%.0f,%.0f,%.0f)"),
+				GFrameParamsCallCount, GFrameParamsLogCount, FrameIndex, FrameRects.Num(),
+				AtlasRect.X, AtlasRect.Y, AtlasRect.Z, AtlasRect.W,
+				CanvasRectValue.X, CanvasRectValue.Y, CanvasRectValue.Z, CanvasRectValue.W,
+				Sizes.X, Sizes.Y, Sizes.Z, Sizes.W);
+		}
+
+		OutAtlasRect.SetAndAdvance(FVector4f(
+			static_cast<float>(AtlasRect.X), static_cast<float>(AtlasRect.Y),
+			static_cast<float>(AtlasRect.Z), static_cast<float>(AtlasRect.W)));
+		OutCanvasRect.SetAndAdvance(FVector4f(
+			static_cast<float>(CanvasRectValue.X), static_cast<float>(CanvasRectValue.Y),
+			static_cast<float>(CanvasRectValue.Z), static_cast<float>(CanvasRectValue.W)));
+		OutSizes.SetAndAdvance(Sizes);
+	}
+}
+
+void UNiagaraDataInterfaceSpriteAtlas::WrapFrameVM(FVectorVMExternalFunctionContext& Context)
+{
+	FNDIInputParam<float> InRawFrame(Context);
+	FNDIOutputParam<float> OutFrame(Context);
+
+	const float NumFrames = static_cast<float>(FrameRects.Num());
+
+	for (int32 InstanceIdx = 0; InstanceIdx < Context.GetNumInstances(); ++InstanceIdx)
+	{
+		const float RawFrame = InRawFrame.GetAndAdvance();
+		// 用 floor 做「正模」：frac() 对负数会给出负值，循环播放会卡在第 0 帧。
+		const float Wrapped = NumFrames > 0.0f
+			? RawFrame - FMath::FloorToFloat(RawFrame / NumFrames) * NumFrames
+			: 0.0f;
+		OutFrame.SetAndAdvance(Wrapped);
 	}
 }
 

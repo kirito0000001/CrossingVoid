@@ -113,13 +113,19 @@ UV = (整数格 + 格内UV) × (1/列数, 1/行数)
 | "有时候根据生命长度自适应" | 按 `Particles.Age` 推帧（`Rate` 或"一个生命周期播 N 遍"） |
 | "有时候可以用浮点直接设置当前是第几帧（这样也可以做曲线自定义）" | `Frame Index`(float) 直通；接引擎自带 **Float from Curve** 动态输入 = 曲线自定义帧序 |
 
-- **MVP 实现形态**：三个薄模块 `Play_SpriteAtlas_Age` / `_Time` / `_Frame`，
-  而不是一个带枚举开关的大模块 —— 手工点图省事；跑通后再考虑合并
+- **MVP 实现形态（已落地）**：一个薄模块 `Play_SpriteAtlas`，用 `Play Mode` 输入切换三种帧源
+  （`0` = 按 Flipbook 帧率 / `1` = 按粒子生命长度播完一遍 / `2` = `Frame Index` 直通）。
+  原设计是三个模块 `Play_SpriteAtlas_Age` / `_Time` / `_Frame`，实际合并成一个：
+  三种模式共用同一条"回绕 → 取矩形 → 写 DMP → 写 SpriteSize"的尾巴，拆开只是三份重复。
+  源文件 `DFX/Modules/M_PlaySpriteAtlas.dfm`
 - **MVP 有**：`Start Frame` / `Frame Offset`（接 `Random Float in Range` 就是随机起帧）
 - **MVP 没有（留第二步）**：`End Frame` / `Loop` 开关 / "一个生命周期播 N 遍" / `Pause` / 倒放 / 按粒子 ID 哈希的确定性随机起帧。
-  现在 Age/Time 两条是**恒定回绕**（`frac(Raw/N)*N`），
-  "一炮只播一遍"靠 `Lifetime = 帧数 / 帧率` 实现；"_Frame" 那条**不回绕**，越界由 DI clamp 到首/尾帧
-- 输出：`Particles.DynamicMaterialParameter1/2/3` + `Particles.SubImageIndex`（见 §4.1）
+  现在三种模式都是**恒定回绕**（`Raw - floor(Raw/N)*N`，负值也落在 `[0,N)`），
+  "一炮只播一遍"靠 `Lifetime = 帧数 / 帧率` 实现
+- 输出：`Particles.DynamicMaterialParameter` / `...Parameter1` / `...Parameter2` + `Particles.SubImageIndex`（见 §4.1）
+  - ⚠️ **第一个属性名没有数字**（引擎 `NiagaraModule.cpp:448-451`），它对应材质 `DynamicParameter` 的**索引 0**，
+    `...Parameter1` → 索引 1、`...Parameter2` → 索引 2（`NiagaraSpriteRendererProperties.cpp:355-358` 做映射）。
+    写成 `1/2/3` 会整体错位一位，材质读到默认值 `(1,1,1,1)` ⇒ UV 算飞 ⇒ **全透明，什么都看不见**（踩过）
 
 **③ 尺寸模块 `Sprite Atlas Size`（可选）**
 
@@ -249,15 +255,29 @@ UV = (整数格 + 格内UV) × (1/列数, 1/行数)
    `frame.w/h` 仍是旋转前语义，消费方要自己换轴。
 4. **源帧尺寸不统一会跳**：`sourceSize` 各帧不同 → UE 每帧 pivot 偏移不同 → Flipbook 播放上下跳
    （`ue_atlas.py:959-976` 只会警告，建议改 `--mode grid`）。
-5. **不要用 `Particles.NormalizedAge`** 当帧率源（它是 Age/Lifetime，寿命一变帧率就变，且表达不了相位/起始帧）；
-   用 `Particles.Age` 或自建累加器。
+5. **不要用 `Particles.NormalizedAge` 直接当帧率源**（它是 Age/Lifetime，寿命一变帧率就变，且表达不了相位/起始帧）；
+   要的是**已存活秒数**。理想是 `Particles.Age`，但 DreamFX 的常用属性表里没有它（写了报 DFX3046），
+   所以模块里用 `Particles.NormalizedAge * Particles.Lifetime` 等价还原 —— 数值上等于 Age，且无副作用
+   （见 `DFX/Modules/M_PlaySpriteAtlas.dfm` 的 Body 注释）。
 6. **`Sub UV Blending` 对非等分图集不能开**（它按"下一个相邻格"混合，非等分下不成立）。
-7. DI 侧：`CanExecuteOnTarget` **默认返回 false**，不覆写就**静默失效**；
+7. **绝对不要写 `Particles.SubImageIndex`**（2026-10-04 实测踩坑，真凶级）：
+   精灵渲染器会把它当子图网格坐标掺进材质读到的 TexCoord ——
+   `NiagaraSpriteVertexFactory.ush:1066 SubImageAV = floor(SubImageA * SubImageSize.z)`、
+   `:1068 TexCoord.y = (SubImageAV + UV.y) * SubImageSize.w`；
+   非等分图集必须 `SubImageSize=(1,1)` ⇒ `SubImageSize.z = 1/1 = 1` ⇒ **`TexCoord.y = 帧号 + UV.y`**。
+   症状是「第 0 帧正常、第 1 帧起全空」（第 0 帧偏移恰好为 0）。
+   材质自己算 UV 的方案里，SubImageIndex 必须保持默认 0（`NiagaraConstants.cpp:409` 默认 `0.0`；
+   渲染器兜底 `DefaultSubImage = 0.0`，`NiagaraRendererSprites.cpp:578`）。
+8. DI 侧：`CanExecuteOnTarget` **默认返回 false**，不覆写就**静默失效**；
    `GetFunctions` 已 `UE_DEPRECATED(5.4)`，正确覆写点是
    `NiagaraDataInterface.h:890 virtual void GetFunctionsInternal(TArray<FNiagaraFunctionSignature>& OutFunctions) const`；
    DI 要在编辑器里可见，CDO 的 `PostInitProperties` 里必须
    `FNiagaraTypeRegistry::Register(FNiagaraTypeDefinition(GetClass()), Flags)`
    （范本 `NiagaraDataInterfaceSpriteRendererInfo.cpp:73-87`）。
+9. **自定义 DI 必须覆写 `CopyToInternal`**（2026-10-04 实测）：`NiagaraComponent.cpp:3928-3951` 给每个
+   NiagaraComponent 建 DI 实例时用的是 `NewObject` + `CopyTo`（**不是** `DuplicateObject`），
+   而 `UNiagaraDataInterface::CopyTo` 只搬 `CopyToInternal` 里显式拷贝的字段 ——
+   不覆写的话运行时实例拿到的是**空帧表**（编辑器面板却显示正常，因为面板看的是资产上的实例）。
 
 ## 9. 环境注意事项（本机）
 
@@ -267,3 +287,164 @@ UV = (整数格 + 格内UV) × (1/列数, 1/行数)
   （`Plugins\ZDBridge\README.md:41-47`）。
 - 引擎：`D:\UnrealEngine-5.8.2`（工程 `CrossingVoid.uproject` 的 EngineAssociation
   `{3AAA80DF-47C5-B2AA-3115-6B8F0BFEA918}` 指向它）。
+
+## 10. 材质的光照模型与混合模式（2026-10-02 核实，带出处）
+
+**问题**：特效材质该用无光照（Unlit）还是受光（Lit）？加性混合下 `A → Opacity` 到底要不要连？
+
+**结论**：
+
+1. 自发光类特效（闪电、火花、能量、斩击、光环）→ **Unlit** 是默认做法。三个理由：
+   ① 亮度所见即所得，不受场景光照 / 环境色 / 阴影影响（受光特效进暗场景会变暗、被环境色污染、
+   被阴影切成块）；② 省掉整个光照计算；③ 与 Additive 天然配套（见下）。
+   知乎《UE4官方课程：材质大师（笔记）》（`zhuanlan.zhihu.com/p/105032305`）给的量级：默认光照材质
+   ~101 条指令 vs 无光照 ~31 条 —— **仅作量级参考，未独立验证**（该文 `/tardis/` 取全文失败）。
+2. 但"所有特效都不受光"是过度概括。**需要受光的**：烟 / 尘 / 雾（要体积感与方向感）、
+   要与场景融合的碎屑 / 水花 / 贴花；NPR 项目走「受光 + 自定义光照函数」；混合特效拆两个渲染器
+   （受光的烟 + Unlit 的火）。
+3. `M_FXAtlasSheet` 是**帧播放骨架材质**：核心工作是把当前帧矩形换算成 UV，与光照模型无关
+   ⇒ 先做 Unlit + Additive；将来要受光版就复制一份改 Shading Model = Default Lit，
+   UV 那 10 个节点一个都不用动（只需把 Emissive 改接 BaseColor / Roughness / 法线）。
+
+**加性混合的 Opacity 语义（引擎源码实证）**：
+
+- `D:\UnrealEngine-5.8.2\Engine\Shaders\Private\BasePassPixelShader.usf:2325-2327`：
+  ```
+  #elif MATERIALBLENDING_ADDITIVE
+      Out.MRT[0] = half4(Color * Fogging.a * Opacity, 0.0f);
+  ```
+  ⇒ 加性下最终贡献 = **自发光 × 雾效 × Opacity**，alpha 写 0。
+  **所以 `A → Opacity` 要连**：不连时 Opacity 默认 1，`Defatk` 那 1532 个半透明辉光像素
+  会按 RGB 全额加进去（硬边、过曝），柔和的辉光衰减就没了。
+  注意：透明区 RGB = 0，加进去也是 0，所以"不连就出白块"的说法不成立 —— 连它的真实理由是**边缘强度**。
+- `D:\UnrealEngine-5.8.2\Engine\Shaders\Private\BasePassPixelShader.usf:2669-2673`：
+  Additive 的 `BackgroundVisibilityAdd = 0.0f`、`PathThroughputMul = 1.0f` ⇒ 加性**完全不遮挡背景**（纯加色）。
+- `D:\UnrealEngine-5.8.2\Engine\Shaders\Private\MaterialTemplate.ush:4592`：
+  Additive 仍参与按 Opacity 裁剪 `clip(MaterialOpacity - 1/255.0 - GetMaterialOpacityMaskClipValue())`
+  ⇒ Opacity ≲ 0.004 的像素被丢弃。
+- 官方文档 *Material Blend Modes in Unreal Engine*（UE 5.8，
+  https://dev.epicgames.com/documentation/en-us/unreal-engine/material-blend-modes-in-unreal-engine）：
+  Additive 公式 `Final color = Source color + Dest color`，**"not compatible with dynamic lighting"**，
+  黑色渲染为透明，适合火焰 / 蒸汽 / 全息；缺点是浅色背景下不易看清（对策 AlphaComposite）。
+  Translucent 公式 `Source color * Opacity + Dest color * (1 - Opacity)`，同样不受动态光照。
+
+**图集贴图的底色实测（修正早前假设）**：
+
+- 早前担心 `Defatk.png` 有白底 → 加性叠加会出白块。实测（2026-10-02）：
+  文件 `D:\NewData\CrossingVoidZDProject\Tools\Atlas\Defatk\Defatk.png`，169901 字节，
+  IHDR `colortype = 6`（RGBA，带真 alpha 通道），597×487；每 6 像素采样 8200 点 →
+  **6567 点 alpha = 0**（RGB 亦为 0,0,0）、1532 点半透明（辉光边缘）、101 点 alpha = 255。
+- ⇒ **背景是透明黑，不是白**（图片查看器把透明合成到白底，才看着像白）。
+  加性叠加不会出白块；透明区 RGB = 0，即使忽略 alpha 也不贡献颜色。
+- 教训：不要把查看器的显示效果当成贴图数据；贴图语义要读 IHDR / 采样 alpha 定论。
+
+**混合模式逐个为什么不行（编辑器下拉里那 7 项）**：
+
+| 混合模式 | 公式 / 行为 | 用在 `M_FXAtlasSheet`（闪电图集）上会怎样 |
+|---|---|---|
+| **Additive** ✅ | `Src + Dst`，不遮挡背景（`BasePassPixelShader.usf:2669-2673` 把 `BackgroundVisibilityAdd` 置 0） | **选它**。闪电是"往画面上加光"，黑/透明区加 0 = 天然透明；多张叠加越叠越亮，正是能量特效要的 |
+| Translucent | `Src*Opacity + Dst*(1-Opacity)` | 能用但不对味：辉光会**盖住**背景而不是叠加，颜色偏灰、亮度上不去；需要"能压暗场景"的烟/尘才用它 |
+| Masked | 硬裁切，只留 OpacityMask > 阈值的像素 | 辉光边缘全被切成硬边（半透明像素要么全留要么全丢），闪电的柔和光晕直接没了 |
+| Opaque | 忽略 alpha，写不透明像素 | 整个 928×640 画布变成一块实心矩形 —— 灾难 |
+| Modulate | `Dst * Src`，只能压暗 | 是"乘暗"用的（影子、暗角、去色），闪电会变成一块黑斑 |
+| AlphaComposite (Premultiplied Alpha) | 预乘 alpha 的半透明变体 | 官方推荐的**加性的替代品**：加性在浅色天空前看不清时才换它（它能既压暗又提亮、边缘更稳）。现在不需要，但值得记着 |
+| AlphaHoldout | 用来把场景"挖洞"的合成工具 | 跟特效播放无关，别选 |
+
+- 结论：**自发光 / 加光类 → Additive；能压暗 / 需要遮挡背景类（烟、尘、暗雾、贴花）→ Translucent**；
+  浅色背景下加性看不清 → 换 AlphaComposite。
+- 混合模式与 UV 换算无关：将来要换混合模式，材质里那 10 个 UV 节点一个都不用动。
+
+## 11. 文本创作链的现状与遗留（2026-10-04）
+
+**三层文本源 → 生成资产**：
+
+| 层 | 文本源 | 生成物 | 构建方式 |
+|---|---|---|---|
+| 数据 | `Plugins/AtlasFX/Source/AtlasFX/**`（C++） | `UnrealEditor-AtlasFX.dll` | `Build.bat CrossingVoidEditor Win64 Development -Project=C:\CrossingVoid\CrossingVoid.uproject`（先关编辑器） |
+| 播放 | `DFX/Modules/M_PlaySpriteAtlas.dfm` | `/AtlasFX/Modules/Play_SpriteAtlas` | `pwsh -File Plugins/DreamFX/.skill/dfx.ps1 build ...` |
+| 采样 | `Plugins/AtlasFX/DShader/M_FXAtlasSheet.dss` | `/AtlasFX/M_FXAtlasSheet` | 编辑器启动时自动编译（改完保存即生效） |
+| 系统 | `DFX/Effects/NS_AtlasDefAtk.dfs` | `/AtlasFX/Effects/NS_AtlasDefAtk` | `dfx.ps1 build` |
+
+**数据通道契约（DI → 材质）**：`Particles.DynamicMaterialParameter1` = 图集矩形 `(x,y,w,h)` 像素坐标；
+`2` = 画布矩形；`3` = 尺寸包 `(贴图W, 贴图H, 画布W, 画布H)`。
+材质只用 0 和 2（`Sizes.xy` 当除数把像素 UV 归一化）。渲染器侧的绑定字段是
+`DynamicMaterial1Binding/2/3Binding`（5.8 的命名），默认已指向这三个属性。
+
+**用户 2026-10-04 决定「先记录进文档、以后再做」的功能**（§4.2 设计稿里有、当前实现没有）：
+
+1. **画布还原模式**：数据其实已经通了（DMP2 就是画布矩形），缺的是材质里把「按画布对齐」那条支路接上 ——
+   现在材质只做「按帧矩形拉伸到面片」。
+2. **`Play_SpriteAtlas_Time` / `Play_SpriteAtlas_Frame` 两个变体**：现在只有年龄驱动的一种。
+   模块体只差第一行（`Particles.NormalizedAge` 换成引擎时间或一个帧号输入）。
+3. **独立的 `SpriteAtlasSize` 模块**：把「面片尺寸跟随当前帧」从播放模块里拆出来，
+   给想自己写播放逻辑的人用。
+4. **GPU 模拟支持**：DI 的 `CanExecuteOnTarget` 目前只认 CPUSim。
+
+**会咬人的坑**：
+
+- **自定义 DI 必须覆盖 `CopyToInternal`**：每个 NiagaraComponent 都给自己造一份 DI 实例
+  （`NiagaraComponent.cpp:3949-3950` 用 `NewObject` + `CopyTo`，**不是** `DuplicateObject`），
+  而 `UNiagaraDataInterface::CopyTo`（`NiagaraDataInterface.cpp:216`）只搬 `CopyToInternal` 里复制的东西。
+  不覆盖 ⇒ 运行时那份 DI 是空实例（实测 `FrameRects=0 CanvasRects=0 TextureSize=(1,1) Flipbook=<null>`）
+  ⇒ `GetRectClamped` 静默回退 `(0,0,1,1)`。样板见 `NiagaraDataInterfaceTexture.cpp:126-128`。
+- **模块体里不要写 `if/else`**：VectorVM 后端会把分支展平成 select
+  （`ir_vm_flatten_branches_to_selects_visitor.cpp:110-185`），展平器在「A 分支有赋值、B 分支没有对应赋值」
+  时会拿**变量原值**当另一路（`:151-166`）；那一路若来自 DI 出参就会编译失败：
+  `error: Component selction_result of variable selction_result has no valid offset. Possibly uninitialized data being used.`
+  （`ir_vm_gen_bytecode_visitor.cpp:629-638`）⇒ 用 `step` 掩码 + 线性组合代替分支。实测 2026-10-04，
+  Spawn 与 Update 两个脚本一起挂。
+- 换图集 = 换 `.dfs` 里那一行 Flipbook 路径，帧表自动烘（§13），不用手抄数字。
+- 反编译镜像 `C:\CrossingVoid\DShader\Decompiled\**` 会被编辑器自动编译成 `/Game/Decompiled/**` 的垃圾资产；
+  不需要镜像时把那些 `.dss` 删掉。
+- DreamShader 有**来源守卫**：`.dss` 只肯覆盖自己生成的资产，接手手搓资产要先备份挪走（`DSH8103`）。
+
+## 12. 闭环工具：`Plugins/AtlasFX/Tools/New-AtlasSystem.ps1`
+
+从图集工具的 `*_sequence.json` 生成整套 `.dfs` 系统源（发射器 / 渲染器 / 模块接线 / 用户参数）：
+
+```powershell
+# 生成（默认写到 DFX/Effects/NS_Atlas<图集名>.dfs，已存在要 -Force）
+pwsh -File Plugins/AtlasFX/Tools/New-AtlasSystem.ps1 `
+    -Sequence D:\NewData\CrossingVoidZDProject\Tools\Atlas\Defatk\Defatk_sequence.json -Fps 15 -Force
+# 构建（先关掉编辑器）
+pwsh -File Plugins/DreamFX/.skill/dfx.ps1 build DFX/Effects/NS_AtlasDefatk.dfs
+```
+
+- `-Fps` **必须自己给**：sequence.json 里没有帧率，要从 PaperFlipbook 上抄（`Defatk1` = 15）。
+- 自动警告：`rotated=true` 的帧（当前不支持旋转帧）、各帧 `sourceSize` 不统一、缺 `spriteSourceSize`、
+  `frameCount` 与实际条数不符 —— 这些都是已知表达边界，不静默糊过去。
+- `-DryRun` 只打印不写文件；`-Build` 生成后直接调 `dfx.ps1 build`。
+- 生成的 DI JSON 默认**只有一行 Flipbook**（帧表交给 §13 的自动烘表）；
+  只有显式 `-Flipbook ""` 时才写手工兜底数据 `AtlasTexture` + `ManualFrameRects/ManualCanvasRects/ManualCanvasSize/ManualFps`。
+
+## 13. 帧表自动化：DI 自己从 Flipbook 烘表（2026-10-04 实现）
+
+**目标**（用户 2026-10-04 原话："计算帧表其实本来就不是特效这边的事情"）：图集侧只负责出
+`png` + `PaperFlipbook`，Niagara 侧的 `.dfs` 只写一行 Flipbook 路径，帧表由 DI 自己算。
+
+**实现**（`Plugins/AtlasFX/Source/AtlasFX/Private/NiagaraDataInterfaceSpriteAtlas.cpp`）：
+
+- `RefreshFromSource()` —— 烘表的唯一入口（编辑器按钮 / 改属性 / 加载时都走它）。
+  开头把当前源算成签名存进 `BakedSourceSignature`。
+- `ComputeSourceSignature()` —— `v<烘表算法版本>|fb:<Flipbook 路径>|<帧数>|<帧率>|` + 每帧
+  `<Sprite 路径>@<源UV>+<裁剪后尺寸>><trim 原点>`。换图 / 重排图集 / 改帧率都会变。
+  **改烘表逻辑时把版本号 +1**，强制所有资产下次加载重烘（v2 = 下面的贴图尺寸退路修复）。
+- `PostLoad()` —— 签名不一致就 `RefreshFromSource()` + `MarkPackageDirty()`。
+  DreamFX 的 headless build 也会烘：适配器先加载已有资产（`DFX5003` 就是证据），PostLoad 触发，最后保存写回。
+- `NeedsRebakeFromSource()` —— **非编辑器构建恒 false**。`RefreshFromSource` 的 Flipbook 分支整段在
+  `#if WITH_EDITOR` 里（要读 `PaperSprite` 的编辑器专用字段，`PaperSprite.h:269-270`），
+  运行时跑一遍会把烘好的表清空。
+
+**无 RHI 进程的坑**：headless build 里 `UTexture2D::GetSizeX()` 返回 **0**
+（`Texture2D.cpp:349-363`：`PrivatePlatformData` 为空时直接 `return 0`），
+而材质用 `Sizes.xy` 做 UV 归一化 ⇒ 0 会让 UV 变 NaN ⇒ 面片全透明。
+退路：`GetImportedSize()`（`Texture2D.cpp:638-645`，非 cooked 包返回源图尺寸）→ 再拿不到就沿用上次的值。
+
+**验证**（2026-10-04；此时 `.dfs` 的 DI 只剩一行 Flipbook）：
+`pwsh -File Plugins/DreamFX/.skill/dfx.ps1 decompile /AtlasFX/Effects/NS_AtlasDefAtk` 读回
+`FrameRects` 6 条、`CanvasRects` 6 条、`CanvasSize 928×640`、`TextureSize 597×487`、`Fps 15`、
+`BakedSourceSignature "v2|fb:/Game/AssetMaterial/FXs/通用Flipbook/Defatk1.Defatk1|6|15.0000|…"`。
+
+**注意 `CanvasRects` 的约定**：DI 烘出来的是 `(画布内 x, y, 帧宽, 帧高)`，
+而图集工具 `sequence.json` 的 `spriteSourceSize + sourceSize` 是「位置 + **画布尺寸**」的写法 ——
+两者不一样；脚本在手工兜底模式下按 DI 的约定生成。

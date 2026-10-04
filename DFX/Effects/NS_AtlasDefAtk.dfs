@@ -1,0 +1,110 @@
+// NS_AtlasDefAtk —— Defatk 闪电图集特效（文本源，DreamFX 生成）
+//
+// 数据层：AtlasFX 插件的 C++ 数据接口 UNiagaraDataInterfaceSpriteAtlas（只支持 CPU 模拟）。
+// 播放层：/AtlasFX/Modules/Play_SpriteAtlas —— 由 DFX/Modules/M_PlaySpriteAtlas.dfm 生成，
+//         按 PlayMode 推进帧号（默认 0 = 按 Flipbook 帧率），并把当前帧的
+//         「图集矩形 / 画布矩形 / 尺寸包」写进 Particles.DynamicMaterialParameter（材质索引 0/1/2）。
+// 采样层：/AtlasFX/M_FXAtlasSheet —— Unlit + Additive，按「画布还原」采样：
+//         面片 = 画布尺寸，帧放回它在画布里的位置（用 DynamicParameter 0/1/2）。
+//
+// 改这个文件后：关掉编辑器 → pwsh -File Plugins/DreamFX/.skill/dfx.ps1 build DFX/Effects/NS_AtlasDefAtk.dfs
+System(Name="Effects/NS_AtlasDefAtk", Root="Plugin.AtlasFX")
+{
+    Settings = {
+        WarmupTime  = 0.0;
+        FixedBounds = box(-300, -300, -300, 300, 300, 300);
+
+        // 让 Play_SpriteAtlas 这个短名能被解析到 /AtlasFX/Modules 下。
+        // ModulePaths 是「追加」搜索根，不会顶掉引擎自带的 /Niagara/Modules。
+        ModulePaths = [ "/AtlasFX/Modules" ];
+    }
+
+    Properties = {
+        // 数据接口参数的配置是「一个 JSON 对象字符串」。对象引用写裸路径字符串
+        // （导出器会写成 {"refPath":"..."}，适配层在喂给引擎前会把它改回裸字符串，两种都收）。
+        //
+        // 帧表**不再手写**：DI 在资产加载时（UNiagaraDataInterfaceSpriteAtlas::PostLoad）
+        // 从 Flipbook 自动烘出「图集矩形 / 画布矩形 / 画布尺寸 / 贴图尺寸 / 帧率」并存回资产，
+        // 源签名（Flipbook 路径 + 帧数 + 帧率 + 每帧 Sprite 的源矩形）没变就不重复烘。
+        // ⇒ 换图集 = 只改下面这一行 Flipbook 路径。
+        // 手工兜底数据源（AtlasTexture + ManualFrameRects/ManualCanvasRects/ManualCanvasSize/ManualFps）
+        // 仍然可用，那种情况下不自动烘。
+        DI<SpriteAtlas> Atlas = "{\"Flipbook\":\"/Game/AssetMaterial/FXs/通用Flipbook/Defatk1.Defatk1\"}";
+
+        float SizeScale  = 1.0 [ Group="图集"; SortPriority=10;
+            Description="1 像素对应多少世界单位（1.0 = 1 厘米，即 UE 默认单位）。面片尺寸 = 目标尺寸 × 这个值：1.0 时画布 928×640 = 9.28×6.4 米，闪电本体 1.7～3.6 米；想要更大直接乘。" ];
+        float FitFrame   = 0.0 [ Group="图集"; SortPriority=12;
+            Description="面片取哪个尺寸：0 = 画布还原（面片 = 整块画布 928×640，帧放回它在画布里的位置，默认）；1 = 铺满（面片 = 当前帧自己的矩形）。" ];
+        float PlayMode   = 0.0 [ Group="图集"; SortPriority=15;
+            Description="播放模式：0 = 按 Flipbook 帧率（默认，Defatk1 = 15 帧/秒）；1 = 按粒子生命长度播完一遍；2 = 用 FrameIndex 直接指定帧号。" ];
+        float StartFrame = 0.0 [ Group="图集"; SortPriority=20;
+            Description="起始帧偏移。接 Random Float in Range 就是随机起帧。" ];
+        float FrameIndex = 0.0 [ Group="图集"; SortPriority=25;
+            Description="模式2专用：直接指定当前帧号（可接 Float from Curve 做曲线控制）。" ];
+        float PlayRate   = 1.0 [ Group="图集"; SortPriority=30;
+            Description="播放速率倍率，负值倒放。模式0：1.0 = 正好等于 Flipbook 帧率；模式1：1.0 = 一个生命周期播完一遍。" ];
+    }
+
+    Emitter DefAtk
+    {
+        Settings = {
+            SimTarget          = CPU;      // 数据接口第一步只支持 CPU
+            LocalSpace         = false;
+            Determinism        = true;
+            RandomSeed         = 1337;
+            AllocationMode     = Fixed;
+            PreAllocationCount = 8;
+        }
+
+        EmitterUpdate = {
+            // Self + Infinite：发射器自己管生命周期，一直循环发射。
+            EmitterState(LifeCycleMode = Self, LoopBehavior = Infinite);
+
+            // 为什么要有 burst：SpawnRate 走的是「间隔累加器」（NiagaraEmitterInstanceImpl.cpp:386/1730），
+            // 每帧累加 SpawnRate × dt，从 0 开始 —— SpawnRate=1.0 时第一颗粒子要等 1 秒才凑够，
+            // 画面就是「前一秒什么都没有」。加一发 t=0 的即时 burst 补上开头，之后仍由 SpawnRate 每秒一发。
+            SpawnBurst_Instantaneous(SpawnCount = 1, SpawnTime = 0.0);
+
+            SpawnRate(SpawnRate = 1.0);
+        }
+
+        ParticleSpawn = {
+            // V2 才是非废弃版本（旧的 Spawn/Initialization/InitializeParticle 会报 DFX6004）。
+            // LifetimeMode 是静态开关，必须写在它管辖的 Lifetime 之前。
+            Spawn/Initialization/V2/InitializeParticle(
+                LifetimeMode = DirectSet,
+                Lifetime     = 1.0
+            );
+        }
+
+        ParticleUpdate = {
+            // ParticleState 提供年龄/归一化年龄。没有它 NormalizedAge 永远是 0，
+            // 图集就卡在第 0 帧 —— 这是「静默错误」，headless 构建读不到 stack issue。
+            ParticleState();
+
+            Play_SpriteAtlas(
+                Atlas      = User.Atlas,
+                PlayMode   = User.PlayMode,
+                SizeScale  = User.SizeScale,
+                FitFrame   = User.FitFrame,
+                StartFrame = User.StartFrame,
+                FrameIndex = User.FrameIndex,
+                PlayRate   = User.PlayRate
+            );
+        }
+
+        SpriteRenderer Sprite
+        {
+            Material     = "/AtlasFX/M_FXAtlasSheet";
+            Alignment    = Unaligned;
+            FacingMode   = FaceCamera;
+            SortMode     = ViewDepth;
+            // 数据接口给的是任意矩形，不是等分网格，所以 Sub Image Size 必须保持 (1,1)，
+            // 让 UV 原样 0..1 交给材质函数去换算。
+            SubImageSize = (1, 1);
+
+            Bind SpriteSize -> Particles.SpriteSize;
+            Bind Color      -> Particles.Color;
+        }
+    }
+}

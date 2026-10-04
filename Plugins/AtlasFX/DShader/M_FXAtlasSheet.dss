@@ -1,0 +1,55 @@
+// M_FXAtlasSheet -- 图集帧采样材质（Niagara 精灵渲染器用）。
+//
+// 三个动态材质参数由 /AtlasFX/Modules/Play_SpriteAtlas 每帧写入
+// （Particles.DynamicMaterialParameter / ...1 / ...2 → 材质 DynamicParameter 索引 0/1/2）：
+//   索引 0 = 当前帧在图集里的像素矩形 (x, y, w, h)
+//   索引 1 = 该帧在画布里的像素矩形 (x, y, w, h)；铺满模式下模块把它写成整块画布
+//   索引 2 = 尺寸包 (.xy = 图集贴图宽高, .zw = 画布宽高)
+//
+// 采样方式 = 「画布还原」：面片按整块画布铺，帧放回它在画布里的位置，帧外透明。
+// 铺满模式靠模块改写索引 1 复用同一套数学（Local 变成 TexCoord，UV 退化成整帧铺满），
+// 所以这个材质不需要任何开关。
+//
+// 编译目标：/AtlasFX/M_FXAtlasSheet
+//
+// 2026-10-04 排查记录：「只有第 0 帧能显示」的真凶**不在这个材质里**，而是模块
+// /AtlasFX/Modules/Play_SpriteAtlas 当时多写了一行 Particles.SubImageIndex = Frame。
+// 精灵渲染器会把它当子图网格坐标掺进材质读到的 TexCoord（NiagaraSpriteVertexFactory.ush:1066/1068，
+// SubImageSize=(1,1) 时 SubImageSize.z = 1 ⇒ TexCoord.y = 帧号 + UV.y），第 1 帧起整块面片采到贴图外。
+// 定位手段就是下面这套「把三个动态参数画成颜色」的打点版：颜色按帧变 ⇒ 参数通路是好的；
+// 打点版同时把 Mask 乘进亮度，Mask 恒 0 就说明 Local 被 TexCoord 的偏移带歪了。
+// 正式版与打点版的数学完全相同，只是输出从「诊断配色」换回「采样结果」。
+// ============================================================================
+
+#pragma material(ShadingModel = Unlit, BlendMode = Additive, bUsedWithNiagaraSprites = true, Backend = Graph)
+
+/// @group Atlas   @desc 图集贴图（手工兜底模式用；Flipbook 模式同样用它）
+/// @default /Game/AssetMaterial/FXs/通用Flipbook/Textures/Defatk
+uniform Texture2D Sheet;
+
+export void M_FXAtlasSheet(inout material m)
+{
+    // 当前帧在图集里的像素矩形
+    float4 AtlasRect = UE.Expression(Class = "DynamicParameter", ParameterIndex = 0).RGBA;
+    // 该帧在画布里的像素矩形
+    float4 CanvasRect = UE.Expression(Class = "DynamicParameter", ParameterIndex = 1).RGBA;
+    // 尺寸包：.xy = 图集贴图宽高，.zw = 画布宽高
+    float4 Sizes = UE.Expression(Class = "DynamicParameter", ParameterIndex = 2).RGBA;
+
+    // 面片 UV（0..1）→ 画布像素坐标 → 帧内 0..1
+    float2 CanvasPx = UE.TexCoord(Index = 0) * Sizes.zw;
+    float2 Local = (CanvasPx - CanvasRect.xy) / CanvasRect.zw;
+
+    // 帧外一律透明（画布还原时面片比帧大，多出来的部分是空的）
+    float2 InFrame = step(0.0, Local) * step(Local, 1.0);
+    float Mask = InFrame.x * InFrame.y;
+
+    // 帧内 0..1 → 图集里的实际 UV
+    float2 UV = (AtlasRect.xy + Local * AtlasRect.zw) / Sizes.xy;
+    float4 C = Sheet.Sample(UV) * Mask;
+
+    // Additive 的像素着色器输出是 Color * Opacity（BasePassPixelShader.usf:2325-2327），
+    // 所以「颜色给采样值、透明度给采样 alpha」= 预乘式的加性精灵，正是闪电要的。
+    m.EmissiveColor = C.rgb;
+    m.Opacity = C.a;
+}

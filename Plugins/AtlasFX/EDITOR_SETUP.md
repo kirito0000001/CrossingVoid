@@ -1,253 +1,138 @@
-# AtlasFX 第一步：需要你在编辑器里点出来的东西
+# AtlasFX 上手（照着点就行）
 
-C++ 侧（插件 `AtlasFX` 的 **Runtime** 模块）只提供一个东西：
-
-| 提供者 | 名字 | 干什么 |
-| --- | --- | --- |
-| C++ | Data Interface **Sprite Atlas**（`UNiagaraDataInterfaceSpriteAtlas`） | 帧表：帧数 / 图集矩形 / 画布矩形 / 画布尺寸 / 贴图尺寸 / 帧率 |
-
-下面 6 个是二进制 `.uasset`，只能点出来。**先做第 0 步编译。**
+> 这份只讲「点哪里、输什么」。原理写在 `DESIGN.md`。
+>
+> **⚠️ 2026-10-04 起，这份文档的大部分已经过时**：材质 / 模块 / 系统三层现在都由**文本源**生成，
+> 不再需要手点节点 —— 见 `DESIGN.md` §11（现状与遗留）、§12（闭环脚本 `Tools/New-AtlasSystem.ps1`）。
+>
+> 它仍然有用的地方：**编辑器侧的操作知识**（数据接口怎么加成用户参数、用户参数面板在哪、
+> 渲染器和材质该填什么），以及在文本链出问题时拿来对照「手点版长什么样」。
 
 ---
 
-## 0. 编译
+## 0. 再编一次（必须先做）
 
-1. 关掉 Unreal Editor（Live Coding 也停掉）。
-2. 命令行：
+关掉编辑器 → 命令行跑：
 
 ```
 D:\UnrealEngine-5.8.2\Engine\Build\BatchFiles\Build.bat CrossingVoidEditor Win64 Development -Project=C:\CrossingVoid\CrossingVoid.uproject
 ```
 
-3. 打开工程 → Edit → Plugins 确认 **Atlas FX** 已启用。
-4. 随便开一个 Niagara System，在 **User Parameters** 点 `+` → **Data Interface** → 列表里应该能看到 **Sprite Atlas**。
-   - 看不到 = DI 没注册上（`PostInitProperties` 没跑到）或插件模块没编出来。
+编完重开编辑器。
 
-### 要创建的资产清单
+> 为什么还要编：新加的 `Get Frame Params` 一次就吐出材质要的三包数据，模块从 15 个节点降到 7 个；另一个 `Wrap Frame` 负责循环回绕。
 
-| # | 资产 | 建议路径 | 类型 |
+---
+
+## 1. 数据接口 `Sprite Atlas`（帧表自动烘，不用手填）
+
+1. 左下「**参数**」面板 → 「**用户参数**」那一行右侧的 **`+`** → 搜 `Sprite Atlas` → 加进来。
+2. 选中它 → 细节面板里把 **`Flipbook`（序列帧资产）** 指到你的 PaperFlipbook（DefAtk 用 `Defatk1`）。
+3. **完事**。帧表（图集矩形 / 画布矩形 / 画布尺寸 / 贴图尺寸 / 帧率）会自己烘出来，
+   在细节面板里往下翻能看到「图集矩形」有 6 个数组元素。
+
+- 什么时候重烘：换 Flipbook、换图集贴图、改手工兜底表、改帧率 —— 这些动作立刻重烘；
+  另外**每次加载资产**都会比一次「源签名」（Flipbook 路径 + 帧数 + 帧率 + 每帧 Sprite 的源 UV/尺寸），
+  不一致就自动重烘并存盘。⇒ **换图集只需要改这一行 Flipbook**，`.dfs` 里的帧表数字已经不需要了。
+- 想手动强制重烘：细节面板上的 **「重烘帧表（Refresh From Source）」** 按钮。
+- 手工兜底（不用 Flipbook 时）：清空 `Flipbook`，往下填「图集矩形（兜底）」「画布矩形（兜底）」
+  「画布尺寸（兜底）」「帧率（兜底）」，再指一张 `图集贴图（兜底）`。
+  ⚠️ 「画布矩形（兜底）」的写法是 `(画布内 x, 画布内 y, 帧宽, 帧高)` —— **不是**画布总尺寸。
+- 看不到数据先查：`Flipbook` 是不是空的、纸片（PaperSprite）的 **Source UV / Source Dimension** 有没有设。
+
+---
+
+## 2. 材质 `M_FXAtlasSheet`（10 个节点）
+
+1. 内容浏览器右键 → **材质**，命名 `M_FXAtlasSheet`，双击打开。
+2. 点图表空白处 → 右边细节面板改三项：
+   - **Shading Model** = 无光照 **Unlit**
+   - **Blend Mode** = 加性 **Additive**（照抄你线上那个 `M_FXSheet`）
+   - 勾上 **Used with Niagara Sprites**
+3. 右键搜节点，按这张表连（A = 上面那个输入口，B = 下面那个）：
+
+| # | 搜这个 | 细节面板设置 | 连法 |
 | --- | --- | --- | --- |
-| 1 | `Play_SpriteAtlas_Age` | `/AtlasFX/Modules/` | Niagara Module Script |
-| 2 | `Play_SpriteAtlas_Time` | `/AtlasFX/Modules/` | Niagara Module Script |
-| 3 | `Play_SpriteAtlas_Frame` | `/AtlasFX/Modules/` | Niagara Module Script |
-| 4 | `SpriteAtlasSize` | `/AtlasFX/Modules/` | Niagara Module Script |
-| 5 | `MF_SpriteAtlasUV` | `/AtlasFX/Materials/` | Material Function |
-| 6 | `M_FXAtlasSheet` | 和 `NS_FXSheet` 放一起 | Material（Unlit） |
+| 1 | `TextureCoordinate` | — | → ⑤ 的 A |
+| 2 | `DynamicParameter` | **Param Index = 0** | → ③、④ |
+| 3 | `ComponentMask` | 勾 **R、G** | → ⑥ 的 B |
+| 4 | `ComponentMask` | 勾 **B、A** | → ⑤ 的 B |
+| 5 | `Multiply` | — | ① × ④ → ⑥ 的 A |
+| 6 | `Add` | — | ⑤ + ③ → ⑨ 的 A |
+| 7 | `DynamicParameter` | **Param Index = 2** | → ⑧ |
+| 8 | `ComponentMask` | 勾 **R、G** | → ⑨ 的 B |
+| 9 | `Divide` | — | ⑥ ÷ ⑧ ＝ **UV** |
+| 10 | `TextureSampleParameter2D` | 细节面板里命名 **Sheet**；贴图先选 `Defatk` 那张 | UV ← ⑨ |
 
-（插件内容在 Content Browser 里的根是 **Plugins → Atlas FX**，磁盘路径 `C:\CrossingVoid\Plugins\AtlasFX\Content\`。）
+4. 收尾：⑩ 的 **RGB → 材质节点的 Emissive Color**，**A → Opacity**。
+5. 保存。
 
----
+> **加性混合为什么也要连 Opacity**：引擎里加性的输出是 `自发光 × Opacity`（`BasePassPixelShader.usf:2325-2327`），
+> 不连的话 Opacity 默认 1，整块面片（含透明区）都会被加进去。`DefAtk.png` 实测是**透明底**
+> （RGBA，alpha 通道正常），连上 Opacity 就干净，不用另外抠图。
 
-## 1. 数据接口：绑 DefAtk 的 Flipbook
-
-1. 在 System 的 **User Parameters** 里 `+` → Data Interface → **Sprite Atlas**，命名 `Atlas`。
-2. 选中它，Details：
-
-| 属性 | 值 |
-| --- | --- |
-| Flipbook | DefAtk 的 Flipbook 资产 |
-| Rect Inset Pixels | `0.5` |
-| Atlas Texture / Manual * | 全部留空 |
-
-3. 点 **Refresh From Source** 按钮。
-4. 展开 **Baked**，和 `D:\NewData\CrossingVoidZDProject\Tools\Atlas\Defatk\Defatk_sequence.json` 对一遍：
-
-| Baked 字段 | 期望值 |
-| --- | --- |
-| Frame Rects | 6 项 |
-| Texture Size | (597, 487) |
-| Canvas Size | (928, 640) |
-| Fps | 12 |
-
-> 注意：工具在 `pack` 模式**不写** Fps，帧率只从 Flipbook 来（这就是为什么 DI 要绑 Flipbook）。
-> 帧表是烘在 DI 上的普通数组，打包后不依赖 Paper2D。**改了 Flipbook 要回来重点一次 Refresh。**
+> 这个材质干的事：把「当前帧在图集里的矩形」换算成采样坐标。矩形从哪来？下一步的模块喂给它（Dynamic Material Parameter 1/2/3）。
 
 ---
 
-## 2. 材质函数 `MF_SpriteAtlasUV`
+## 3. 播放模块 `Play_SpriteAtlas`
 
-输入（Input 节点，名字照抄）：
+> **这一节不用手点了。** 模块现在由文本源生成：
+> `DFX/Modules/M_PlaySpriteAtlas.dfm` → `/AtlasFX/Modules/Play_SpriteAtlas`
+> （`pwsh -File Plugins/DreamFX/.skill/dfx.ps1 build DFX/Modules/M_PlaySpriteAtlas.dfm -Engine D:\UnrealEngine-5.8.2`）。
+> 下面这张表是"它到底干了什么"，方便你在编辑器里对照检查。
 
-| 名字 | 类型 | 默认 | 接什么 |
-| --- | --- | --- | --- |
-| `UV` | Vector2 | — | 材质里的 TexCoord |
-| `AtlasRect` | Vector4 | — | `Dynamic Parameter` 0 |
-| `CanvasRect` | Vector4 | — | `Dynamic Parameter` 1 |
-| `Sizes` | Vector4 | — | `Dynamic Parameter` 2 = (贴图W, 贴图H, 画布W, 画布H) |
-| `LocalScale` | Vector2 | (1,1) | 可选：局部缩放 |
-| `LocalOffset` | Vector2 | (0,0) | 可选：局部平移 |
-| `FitCanvas` | Scalar | 0 | 0 = 铺满帧；1 = 画布还原 |
+模块做的事：读帧数 → 按 `Play Mode` 推帧号 → 回绕到 `[0, 帧数)` → 取当前帧的
+`Atlas Rect` / `Canvas Rect` / `Sizes` → 写进三个动态材质参数 → 顺便用 `Atlas Rect` 的宽高 × `Size Scale` 写 `Particles.SpriteSize`。
 
-输出：`UV`(Vector2)、`Mask`(Scalar)。
-
-节点（编号就是连接顺序）：
-
-```
- 1  Subtract            : UV - Constant2Vector(0.5,0.5)
- 2  Multiply            : (1) * LocalScale
- 3  Add                 : (2) + Constant2Vector(0.5,0.5)
- 4  Add                 : (3) + LocalOffset                        -> uv01
- 5  BreakOutFloat2Components(AtlasRect)  -> Rxy, Rzw
- 6  BreakOutFloat2Components(Sizes)      -> TexSize(xy), CanvasSize(zw)
- 7  BreakOutFloat2Components(CanvasRect) -> Cxy, Czw
- 8  Multiply            : uv01 * Rzw
- 9  Add                 : (8) + Rxy                                -> fillPx   （图集像素）
-10  Divide              : (9) / TexSize                            -> fillUV
-11  Multiply            : uv01 * CanvasSize                        -> canvasPx （画布像素）
-12  Subtract            : (11) - Cxy                               -> localPx
-13  Add                 : (12) + Rxy                               -> canvasAtlasPx
-14  Divide              : (13) / TexSize                           -> canvasUV
-15  Divide              : (12) / Czw                               -> t         （帧内 0..1）
-16  Subtract            : Constant(1) - t                          -> oneMinusT
-17  Min                 : t 与 oneMinusT                           -> edgeDist(float2)
-18  BreakOutFloat2Components(edgeDist) -> ex, ey
-19  Min                 : ex 与 ey                                 -> edgeDistScalar（帧内 >= 0）
-20  Multiply            : (19) * Constant(1000)
-21  Saturate            : (20)                                     -> canvasMask
-22  LinearInterpolate   : fillUV, canvasUV, Alpha = FitCanvas       -> 输出 UV
-23  LinearInterpolate   : Constant(1), canvasMask, Alpha=FitCanvas   -> 输出 Mask
-```
-
-> 为什么要有 `Mask`：画布还原模式下，面片是整张画布大小，帧只占其中一块；块外的像素必须乘 0，
-> 否则会采到图集里邻居的像素（加性混合下就是明显的脏边）。
-> `Multiply × 1000` 是硬边的近似（过渡带 = 帧宽的 0.1%，597 宽大约 0.6 像素），嫌不够硬就 ×10000。
-
----
-
-## 3. 材质 `M_FXAtlasSheet`（Unlit）
-
-1. 混合模式照抄 `M_FXSheet`（加性 or 半透明）。
-2. 材质细节面板勾上 **Used with Niagara Sprites** 和 **Used with Niagara Mesh Particles**。
-3. 图：
-
-```
-TextureCoordinate          -> uv
-DynamicParameter (Index 0) -> AtlasRect
-DynamicParameter (Index 1) -> CanvasRect
-DynamicParameter (Index 2) -> Sizes
-MaterialFunctionCall(MF_SpriteAtlasUV) 接上以上 + FitCanvas = ScalarParameter("FitCanvas", 默认 0)
-TextureSampleParameter2D("Sheet")  UV 接函数的 UV 输出
-Multiply : 采样结果(RGBA) * 函数的 Mask 输出
-   -> Emissive = RGB
-   -> Opacity  = A
-```
-
-4. 每个动作用一个 Material Instance，平时只需要改 `Sheet`（想还原画布位置就把 `FitCanvas` 设 1）。
-
----
-
-## 4. 三个播放模块
-
-三个都是 **Module Script**，只勾 **Particle Update**（不勾 Spawn）。
-
-三个模块**都会**写这三个动态材质参数（这是材质取数据的唯一通道）：
-
-| 属性 | 内容 |
-| --- | --- |
-| `Particles.DynamicMaterialParameter1` | 当前帧的**图集矩形** (x, y, w, h) 像素 |
-| `Particles.DynamicMaterialParameter2` | 当前帧的**画布矩形** (x, y, w, h) 像素 |
-| `Particles.DynamicMaterialParameter3` | `AppendVector(GetTextureSize, GetCanvasSize)` = (贴图W, 贴图H, 画布W, 画布H) |
-
-外加 `Particles.SubImageIndex` = 当前帧号（方便调试，也让渲染器自带 SubUV 顺带能用）。
-
-### 4.1 `Play_SpriteAtlas_Age` —— 按粒子年龄播（最常用）
-
-输入：`Atlas`(DI)、`Play Rate`(float, 12)、`Start Frame`(float, 0)、`Frame Offset`(float, 0)
-
-```
-1  Multiply : Particles.Age * Play Rate
-2  Add      : (1) + Start Frame
-3  Add      : (2) + Frame Offset                          -> Raw
-4  GetFrameCount(Atlas)                                   -> N   (int，直连即可；不行就插 Convert)
-5  Divide   : Raw / N
-6  Fraction : (5)
-7  Multiply : (6) * N                                     -> Frame
-8  GetAtlasRect(Atlas, Frame)                             -> Rect
-9  GetCanvasRect(Atlas, Frame)                            -> CRect
-10 GetTextureSize(Atlas) / GetCanvasSize(Atlas)           -> TexSize / CSize
-11 AppendVector : TexSize ++ CSize                        -> Sizes (float4)
-Map Set: DMP1=Rect, DMP2=CRect, DMP3=Sizes, Particles.SubImageIndex=Frame
-```
-
-帧率由 `Play Rate` 决定，**和寿命无关**；想一炮只播一遍就把 Lifetime 设成 `帧数 / 帧率`。
-随机起帧：把 `Random Float in Range`(0, 帧数) 接到 `Frame Offset`。
-
-### 4.2 `Play_SpriteAtlas_Time` —— 用外部时间播（多粒子/多次爆发同步）
-
-和 4.1 一样，只把第 1 步换成 `Current Time * Play Rate`（多一个 `Current Time` float 输入，默认 0）。
-驱动方每次刷新写同一个时间值，所有粒子就完全对齐；用它也能绕开 time dilation。
-
-### 4.3 `Play_SpriteAtlas_Frame` —— 我直接给帧号（可接曲线）
-
-输入：`Atlas`(DI)、`Frame Index`(float, 0)
-
-```
-1  GetAtlasRect(Atlas, Frame Index)      -> Rect
-2  GetCanvasRect(Atlas, Frame Index)     -> CRect
-3  GetTextureSize / GetCanvasSize -> AppendVector -> Sizes
-Map Set: 同 4.1，SubImageIndex = Frame Index
-```
-
-**不做回绕**：帧号越界时 DI 会 clamp 到首/尾帧。所以它是"一炮到底"和"接曲线"的正路 ——
-把 `Float from Curve` / `Curve` 的输出接进来就是自定义帧序。
-
----
-
-## 5. 模块 `SpriteAtlasSize` —— 让面片的物理尺寸跟着帧走
-
-输入：`Atlas`(DI)、`Fit Frame`(float, 0)、`Base Plane Size`(Vector2, 默认 (0.928, 0.640))、`Uniform Scale`(float, 1)
-
-```
-1  GetCanvasSize(Atlas)                       -> CSize
-2  GetAtlasRect(Atlas, Particles.SubImageIndex) -> BreakOut -> ARect.zw
-3  LinearInterpolate : CSize, ARect.zw, Alpha = Fit Frame      -> Target
-4  Divide : Target / Base Plane Size                            -> S
-5  Multiply : S * Uniform Scale
-6  AppendVector : (5) ++ Constant(1)                            -> Particles.Scale (float3)
-```
-
-- `Base Plane Size` = ZDBridge 那块 `PlaneMesh` 的原始尺寸（0.928 × 0.640 米，1 像素 = 1 毫米）。
-- `Fit Frame` = 0：面片按整张画布缩放（画布还原模式用这个）。
-  `Fit Frame` = 1：面片贴着当前帧缩放（铺满模式用这个）。
-- 用公告板精灵的话，改第 6 步：写 `Particles.SpriteSize` = `S * Base Plane Size`（像素单位）。
-
----
-
-## 6. 接起来跑 DefAtk
-
-建议**新建**一个 `NS_AtlasDefAtk`，别动线上那个 `NS_FXSheet`：
-
-1. Emitter 的 **Sim Target 必须是 CPU Sim**（第一步 DI 只放行 CPU sim）。
-2. Emitter Spawn：`Spawn Rate` = 0，`Spawn Burst Instantaneous` = 1。
-3. Initialize Particle：`Lifetime` = 0.5（6 帧 @ 12fps = 0.5 秒，正好一遍）。
-4. Particle Update: `Play_SpriteAtlas_Age`，`Play Rate` = 12。
-5. Particle Update（或 Spawn）: `SpriteAtlasSize`，勾上它自己写的 `Particles.Scale`。
-6. 渲染器：Sprite 或 Mesh 都行 —— 材质用 `M_FXAtlasSheet` 的 MI，**`Sub Image Size` 保持 (1,1)**。
-7. 渲染器 Material Parameters 区，确认三个绑定存在（默认就应该是这个）：
-
-| 渲染器属性 | 指向的属性 | 对应材质里 |
+| 输入 | 默认 | 说明 |
 | --- | --- | --- |
-| `Dynamic Material Binding` | `Particles.DynamicMaterialParameter1` | `Dynamic Parameter` 0 |
-| `Dynamic Material 1 Binding` | `Particles.DynamicMaterialParameter2` | `Dynamic Parameter` 1 |
-| `Dynamic Material 2 Binding` | `Particles.DynamicMaterialParameter3` | `Dynamic Parameter` 2 |
+| `Atlas` | — | 数据接口（选 `User.Atlas`） |
+| `Play Mode` | `0.0` | `0` = 按 Flipbook 帧率；`1` = 按生命长度播完一遍；`2` = `Frame Index` 直通 |
+| `Play Rate` | `1.0` | 模式 0 里 1.0 = 正好 Flipbook 帧率（Defatk1 = 15 帧/秒）；负值倒放 |
+| `Start Frame` | `0.0` | 起始帧偏移（接 `Random Float in Range` 就是随机起帧） |
+| `Frame Index` | `0.0` | 模式 2 用；接引擎自带 **Float from Curve** = 曲线控帧 |
+| `Size Scale` | `0.1` | 1 像素 = 多少世界单位（0.1 = 1 毫米） |
 
-> 这条映射是查过源码的：`NiagaraSpriteRendererProperties.cpp:355-357` 把 `DynamicMaterialBinding/1/2`
-> 分别塞进 `MaterialParam0/1/2`，`NiagaraRendererSprites.cpp:735-749` 再把它们写进
-> `DefaultDynamicMaterialParameter0/1/2`，材质模板 `MaterialTemplate.ush:302-330` 里
-> `Dynamic Parameter` 的 Index 0/1/2 正是读这三个。所以 **Niagara 属性名是 1 起、材质 Index 是 0 起**。
-
-8. 期望结果：6 张闪电依次播一遍，每帧的形状/尺寸各不相同（trim 还原生效），0.5 秒后粒子消失。
+> ⚠️ 引擎里那三个属性的名字是 `Particles.DynamicMaterialParameter`（**第一个没有数字**）、
+> `...Parameter1`、`...Parameter2`，分别对应材质 `DynamicParameter` 的索引 0 / 1 / 2
+> （`NiagaraModule.cpp:448-451` 定义名字，`NiagaraSpriteRendererProperties.cpp:355-358` 做映射）。
+> 写成 `1/2/3` 会整体错位一位，材质读到默认 `(1,1,1,1)` ⇒ UV 算飞 ⇒ **全透明，什么都看不见**（踩过）。
 
 ---
 
-## 7. 出问题先查这几条
+## 4. 挂到系统里跑
+
+你现在这个 `NewNiagaraSystem` 就能用（Minimal 发射器 + Sprite 渲染器 + CPU ✓）。
+
+1. **把用户参数改名成 `Atlas`**：左下「参数」面板里选中那个 `Sprite Atlas` → 按 **F2** → 改成 `Atlas`。
+2. 发射器 → **粒子更新（Particle Update）** → 点 `+` → 搜 `Play_SpriteAtlas` → 加进来。
+3. 模块的 `Atlas` 输入是个下拉框 → 选 **`User.Atlas`**；`Size Scale` 先留 `0.1`。
+4. 渲染器（Sprite 渲染器）：
+   - **Material** = `M_FXAtlasSheet`
+   - **Sub Image Size** 保持 `(1, 1)`
+   - 材质参数区那三个 Dynamic Material 绑定保持默认（默认就指向 DMP1/2/3）
+5. 期望结果：6 张闪电依次播一遍，每张形状/尺寸都不一样；一遍 **0.4 秒**（Flipbook 是 15 fps）。
+6. 想只播一次：发射器生成里把 `Spawn Rate` 设 0，加一个 `Spawn Burst Instantaneous` = 1。
+
+---
+
+## 5. 跑通之后再做（现在别做）
+
+- **画布还原模式**：材质再加 9 个节点（画布矩形 + 帧外遮罩 + `Fit Canvas` 开关）
+- **`Play_SpriteAtlas_Time` / `Play_SpriteAtlas_Frame`**：外部时间驱动 / 直接给帧号（可接曲线）
+- **独立的 `SpriteAtlasSize` 模块**、Mesh 渲染器版本（对接 ZDBridge 那套）
+- GPU 支持
+
+---
+
+## 6. 出问题先查
 
 | 现象 | 先查 |
 | --- | --- |
-| 全黑 / 显示整张贴图 | 渲染器那三个 Material Binding 有没有指向 DMP1/2/3；材质有没有勾 Used with Niagara... |
-| 帧不走 | 模块是不是只勾了 Spawn 没勾 Update；`Particles.Age` 有没有被读到；Play Rate 是不是 0 |
-| 边缘有邻居帧的杂色 | `Rect Inset Pixels` 调大到 1~2 |
-| 帧尺寸抖动 / 位置不对 | 回 DI 点一次 `Refresh From Source`；确认 Flipbook 里的 Sprite 都来自同一张图集贴图 |
-| 画布还原模式下整块不见 | DI 的 `Canvas Size` 是不是 0；`Sizes.zw` 有没有接进材质 |
-| GPU 发射器上不生效 | 第一步只支持 CPU sim —— Sim Target 改回 CPU |
-| 编辑器里能看到 DI 但 System 里报找不到函数 | 插件没重新编译（关编辑器 → 跑第 0 步） |
+| 全黑 | 渲染器的三个 Material Binding 有没有指向 DMP1/2/3；材质有没有勾 Used with Niagara Sprites；Blend Mode 对不对 |
+| 显示整张贴图 | 材质里 ⑨ 的除法有没有接对（⑧ 是贴图尺寸）；DynamicParameter 的 Index 是不是 0 / 2 |
+| 帧不走 | 模块是不是只勾了 Spawn 没勾 Update；`NormalizedAge` 有没有接上 |
+| 面片是正方形 / 被拉伸 | ⑧⑨⑩ 那三个节点有没有连；`Size Scale` 太小就调大 |
+| 边缘有邻居帧的杂色 | 数据接口里的「取帧内缩」调到 1~2 |
+| 模块加进来报找不到函数 | 第 0 步没编成功，或者编辑器没重启 |
