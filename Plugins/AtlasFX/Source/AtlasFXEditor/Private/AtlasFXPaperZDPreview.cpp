@@ -78,6 +78,12 @@ namespace
 
 		float LastPlaybackTime = 0.0f;
 		TArray<FNotifyRuntimeState> NotifyStates;
+
+		/** 上一次「一条通知都没认出来」时补扫的时间戳（FPlatformTime::Seconds），用来限流。 */
+		double LastNotifyRescanTime = 0.0;
+
+		/** 这条序列是不是已经把「一条都没认出来」的逐条诊断打过一次了，免得刷屏。 */
+		bool bDumpedNotifyDiagnostics = false;
 	};
 
 	TArray<FPreviewPlayerState> PlayerStates;
@@ -377,6 +383,23 @@ namespace
 
 		UE_LOG(LogAtlasFXPreview, Log, TEXT("跟踪预览序列 %s：%d 条通知会生成特效（序列上共 %d 条）。"),
 			*Sequence->GetName(), State.NotifyStates.Num(), Sequence->GetAnimNotifies().Num());
+
+		// 序列上明明有通知、却一条都没认出来 —— 逐条打印原因，每条序列只打一次。
+		// 已知成因：编辑器刚打开时通知的类/属性还没加载完，反射扫不到，2 秒后补扫就能好。
+		if (State.NotifyStates.Num() == 0 && Sequence->GetAnimNotifies().Num() > 0 && !State.bDumpedNotifyDiagnostics)
+		{
+			State.bDumpedNotifyDiagnostics = true;
+			UE_LOG(LogAtlasFXPreview, Warning,
+				TEXT("预览序列 %s 上 %d 条通知一条都没认出来，逐条打印诊断（会每 2 秒自动补扫一次）："),
+				*Sequence->GetName(), Sequence->GetAnimNotifies().Num());
+			for (UPaperZDAnimNotify_Base* Notify : Sequence->GetAnimNotifies())
+			{
+				if (Notify)
+				{
+					FAtlasFXPaperZDPreview::DumpNotifyDiagnostics(Notify);
+				}
+			}
+		}
 	}
 
 	void UpdatePlayer(FPreviewPlayerState& State)
@@ -386,13 +409,34 @@ namespace
 		const FString SequencePath = Sequence ? Sequence->GetPathName() : FString();
 		if (SequencePath != State.SequencePath)
 		{
+			State.bDumpedNotifyDiagnostics = false;
 			RebuildNotifyStates(State, Sequence);
 			return;
 		}
 
-		if (!Sequence || State.NotifyStates.Num() == 0)
+		if (!Sequence)
 		{
 			State.LastPlaybackTime = Player->GetCurrentPlaybackTime();
+			return;
+		}
+
+		// 通知表是「换序列」那一刻建的，而编辑器刚打开时通知的类/属性可能还没加载好，
+		// 那一瞬间会一条都认不出来；序列不换就再也不会重建 ⇒ 这里每 2 秒补扫一次自愈。
+		if (State.NotifyStates.Num() == 0)
+		{
+			State.LastPlaybackTime = Player->GetCurrentPlaybackTime();
+
+			const double Now = FPlatformTime::Seconds();
+			if (Sequence->GetAnimNotifies().Num() > 0 && Now - State.LastNotifyRescanTime >= 2.0)
+			{
+				State.LastNotifyRescanTime = Now;
+				RebuildNotifyStates(State, Sequence);
+				if (State.NotifyStates.Num() > 0)
+				{
+					UE_LOG(LogAtlasFXPreview, Log, TEXT("预览序列 %s 的通知表补扫成功：现在能认出 %d 条通知。"),
+						*Sequence->GetName(), State.NotifyStates.Num());
+				}
+			}
 			return;
 		}
 

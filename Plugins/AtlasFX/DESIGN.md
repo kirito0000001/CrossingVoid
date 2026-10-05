@@ -912,6 +912,14 @@ PaperZD 的预览**确实会触发通知**，卡在 OwningInstance 上：
 ### 18.4 开关与边界
 
 * 控制台变量 `AtlasFX.PaperZD.PreviewFX`（默认 1，设 0 关闭并收掉已生成的特效）。
+* **通知表的时机坑（2026-10-05 实测，已自愈）**：通知表只在「换序列」时重建
+  （`AtlasFXPaperZDPreview.cpp:387` 的 `SequencePath != State.SequencePath` 分支），而编辑器刚打开时
+  通知的类/属性可能还没加载完 ⇒ 那一瞬间会一条都认不出来，日志写
+  `跟踪预览序列 DefAtk：0 条通知会生成特效（序列上共 3 条）`，且**此后永不重试**
+  （现场：编辑器 10:02:07 扫出 0 条，同一条序列在 10:09:56 用命令行扫是正常的 1 条）。
+  ⇒ 现在 `UpdatePlayer` 在「跟踪到 0 条、但序列上确实有通知」时**每 2 秒补扫一次**，
+  补上后打 `预览序列 %s 的通知表补扫成功：现在能认出 %d 条通知。`；
+  首次认不出时还会逐条 `DumpNotifyDiagnostics`（每条序列只打一次，不刷屏）。
 * 预览世界只有一个（`PaperZDAnimationSourceViewportClient` 创建的那个），且它的播放器**永远**拿不到
   OwningInstance ⇒ 不会和通知自身的逻辑重复生成。
 * 编辑器 ticker 与预览视口的刷新率不一定同频，极快的一次性特效在预览里可能看不出差别 —— 这是预览，不是最终效果。
@@ -950,4 +958,5 @@ PaperZD 的预览**确实会触发通知**，卡在 OwningInstance 上：
 打开 AnimSequence（例如 `DefAtk`）→ 视口里播放 → 通知时间点到了就会看到特效。
 如果没反应，先看 Output Log 里有没有 `LogAtlasFXPreview: 接管 PaperZD 预览播放器...`；
 没有就是没找到预览播放器（检查 PaperZD 模块是否加载、预览视口是否在实时渲染）。
+旧版 DLL 上的临时绕过：在序列编辑器里切到另一个 AnimSequence 再切回来，会重建通知表。
 
