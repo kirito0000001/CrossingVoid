@@ -26,29 +26,20 @@ static TAutoConsoleVariable<int32> CVarAtlasFXPreviewFX(
 	TEXT("1 = 在 PaperZD 序列编辑器预览里自动生成通知上的 Niagara 特效（默认）；0 = 关闭。"),
 	ECVF_Default);
 
-// 2026-10-05 实测结论（用户在预览里逐值试出来的）：**预览相机与游戏相机同轴**（都沿 Y 轴看，
-// PaperZD 预览相机在 (0,-100,0) 朝 +Y），所以预览里生成的特效**不需要任何朝向补偿** ——
-// 把 AtlasFX.PaperZD.PreviewYaw 设成 0 时，看到的画面与游戏里完全一致。
-// 早先「预览沿 Y、游戏沿 X」的判断是误判，两个现象被它带偏了：
-//   ① 最初「看不见」的真因是每帧重建把刚生成的组件立刻收掉了（已由 SequencePath 那版修掉）；
-//   ② 网格模板里 MeshYaw = -90 本身就把面片转成了侧对镜头 —— **游戏里也一样是一条缝**，
-//      已把模块默认与网格模板改回 0（见 DFX/Modules/M_SpriteAtlasSize.dfm）。
-// 这个 CVar 保留作逃生开关：万一某个工程/相机的轴向确实不同，可以在编辑器控制台里临时叠加
-// 一个 Yaw 做对比。默认 0 = 不叠加。
-static TAutoConsoleVariable<float> CVarAtlasFXPreviewYaw(
-	TEXT("AtlasFX.PaperZD.PreviewYaw"),
-	0.0f,
-	TEXT("预览生成特效时额外叠加的 Yaw（度，默认 0 = 不叠加）。预览相机与游戏相机同轴，正常不用改。"),
-	ECVF_Default);
-
-// 游戏里特效挂在角色的根组件上（脚底），而预览里这个渲染组件的原点在精灵中心（实测在胸口）。
-// 不对齐的话同一个特效在预览里会整体高出一截（用户实测「特效跑到人头上面」）。
-// 用精灵包围盒的底边当脚底，把预览的基准点压下去。
-static TAutoConsoleVariable<int32> CVarAtlasFXPreviewFootAlign(
-	TEXT("AtlasFX.PaperZD.PreviewFootAlign"),
-	1,
-	TEXT("1 = 预览生成特效时把基准点对齐到精灵包围盒底边（脚底），与游戏里挂在角色根组件上的效果一致；0 = 直接用渲染组件原点。"),
-	ECVF_Default);
+// 2026-10-05 定案（用户要求）：**预览不做任何自己的偏移与朝向补偿** ——
+// 通知里的 Offset / Rotation / Scale 在预览里怎么摆，游戏里就怎么摆，两边都直接照抄
+// TxSpawn 蓝图的连线（见 SpawnForNotify 里的注释）。
+//
+// 这里曾经挂过两个补偿，都已删除，记下来免得再走一遍：
+//   ① AtlasFX.PaperZD.PreviewYaw（曾默认 90）：误判「预览相机沿 Y、游戏相机沿 X」。
+//      实际两个相机**同轴**（都沿 Y 轴看），任何 Yaw 补偿都会让预览与游戏不一致。
+//      最初「看不见」的真因是网格模板里的 MeshYaw = -90 把面片转成了侧对镜头
+//      （**游戏里也一样是一条缝**），模板已改回 0，见 DFX/Modules/M_SpriteAtlasSize.dfm。
+//   ② AtlasFX.PaperZD.PreviewFootAlign（曾默认 1）：用精灵包围盒底边当脚底，把特效往下压。
+//      游戏里特效挂在**角色根组件**（原点在脚底）上，预览里只有**渲染组件（翻转书）**，
+//      它的原点在**精灵画布中心** —— 这个差是**挂点不同**造成的，而且包围盒随帧/随序列变，
+//      补偿值不稳定（实测不同序列 -257 / -300 / -261 / -279 cm）。要统一得从挂点下手，
+//      见 DESIGN.md §18.4「挂点」那条。
 
 namespace
 {
@@ -247,34 +238,27 @@ namespace
 		const float Sign = bFirstPerson ? 1.0f : -1.0f;
 		const FVector SignedOffset(Offset.X * Sign, Offset.Y * Sign, Offset.Z);
 
-		// 见文件头 CVarAtlasFXPreviewFootAlign：把基准点从「精灵中心」压到「精灵底边（脚底）」，
-		// 与游戏里挂在角色根组件上的位置对齐。
-		FVector FootOffset = FVector::ZeroVector;
-		if (CVarAtlasFXPreviewFootAlign.GetValueOnGameThread() != 0)
-		{
-			const FBoxSphereBounds& Bounds = RenderComponent->Bounds;
-			FootOffset.Z = (Bounds.Origin.Z - Bounds.BoxExtent.Z) - RenderComponent->GetComponentLocation().Z;
-		}
-
 		UNiagaraComponent* Spawned = nullptr;
 		if (bNotAttach)
 		{
 			// 蓝图：Spawn System at Location（世界位置 + 偏移，Scale 直接给，池 = AutoRelease）。
 			Spawned = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
 				World, System,
-				RenderComponent->GetComponentLocation() + FootOffset + SignedOffset,
+				RenderComponent->GetComponentLocation() + SignedOffset,
 				Rotation,
 				Scale,
 				true, true, ENCPoolMethod::AutoRelease, true);
 		}
 		else
 		{
-			// 蓝图：Spawn System Attached —— 注意这个函数**没有 Scale 参数**，
-			// 蓝图也是靠随后那句 SetRelativeScale3D 定缩放的，别把 scale 塞进 spawn。
+			// 蓝图：Spawn System Attached —— Location 用的是**没动过的 Offset**
+			// （蓝图里挂点这一支不做镜像，镜像只出现在 NotAttach 的「计算真正位置」里）。
+			// 注意这个函数**没有 Scale 参数**，蓝图也是靠随后那句 SetRelativeScale3D 定缩放的，
+			// 别把 scale 塞进 spawn。
 			Spawned = UNiagaraFunctionLibrary::SpawnSystemAttached(
 				System, RenderComponent, NAME_None,
-				FootOffset + Offset, Rotation,
-				EAttachLocation::SnapToTargetIncludingScale,
+				Offset, Rotation,
+				EAttachLocation::KeepRelativeOffset,
 				true, true, ENCPoolMethod::None, true);
 		}
 
@@ -283,19 +267,11 @@ namespace
 		{
 			Spawned->SetRelativeScale3D(Scale);
 
-			// 见文件头 CVarAtlasFXPreviewYaw：默认 0（预览与游戏同轴，不需要补偿），
-			// 只在有人手动改了这个 CVar 时才叠加，方便对比不同轴向的工程。
-			const float PreviewYaw = CVarAtlasFXPreviewYaw.GetValueOnGameThread();
-			if (!FMath::IsNearlyZero(PreviewYaw))
-			{
-				Spawned->AddLocalRotation(FRotator(0.0f, PreviewYaw, 0.0f));
-			}
-
 			UE_LOG(LogAtlasFXPreview, Log,
-				TEXT("预览生成特效：%s（通知 %s，时间 %.3f 秒，%s，Scale %s，预览 Yaw %.1f，脚底对齐 %+.1f，组件 %s）"),
+				TEXT("预览生成特效：%s（通知 %s，时间 %.3f 秒，%s，Offset %s，Rotation %s，Scale %s，组件 %s）"),
 				*System->GetName(), *Notify->GetClass()->GetName(), Notify->Time,
-				bNotAttach ? TEXT("世界生成") : TEXT("挂在渲染组件上"), *Scale.ToString(),
-				PreviewYaw, FootOffset.Z, *Spawned->GetName());
+				bNotAttach ? TEXT("世界生成") : TEXT("挂在渲染组件上"),
+				*Offset.ToString(), *Rotation.ToString(), *Scale.ToString(), *Spawned->GetName());
 		}
 	}
 
