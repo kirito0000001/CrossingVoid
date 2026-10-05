@@ -28,6 +28,7 @@ public class AtlasFXEditor : ModuleRules
 			"UserAssetTagsEditor",   // UTaggedAssetBrowserConfiguration + UE::UserAssetTags
 			"Niagara",               // UNiagaraSystem
 			"AtlasFX",               // UNiagaraDataInterfaceSpriteAtlas（属性绑定要按类型找它）
+			"PaperZD",               // UPaperZDAnimPlayer / UPaperZDAnimNotify（序列编辑器特效预览）
 		});
 	}
 }

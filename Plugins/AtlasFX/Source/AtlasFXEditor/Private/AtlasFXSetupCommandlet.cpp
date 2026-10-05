@@ -18,9 +18,12 @@
 
 #include "AtlasFXSetupCommandlet.h"
 
+#include "AnimSequences/PaperZDAnimSequence.h"
+#include "AnimSequences/Players/PaperZDAnimPlayer.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Assets/TaggedAssetBrowserConfiguration.h"
+#include "AtlasFXPaperZDPreview.h"
 #include "DataHierarchyCommonTypes.h"
 #include "DataHierarchyViewModelBase.h"
 #include "Engine/Texture.h"
@@ -30,11 +33,13 @@
 #include "NiagaraRendererProperties.h"
 #include "NiagaraSpriteRendererProperties.h"
 #include "NiagaraSystem.h"
+#include "Notifies/PaperZDAnimNotify_Base.h"
 #include "UObject/UObjectIterator.h"
 #include "TaggedAssetBrowserFilters/TaggedAssetBrowser_CommonFilters.h"
 #include "UObject/AssetRegistryTagsContext.h"   // EAssetRegistryTagsCaller 的定义（AssetData.h 里只有前向声明）
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
+#include "UObject/UnrealType.h"                 // FindFProperty
 #include "UserAssetTagEditorUtilities.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAtlasFXSetup, Log, All);
@@ -112,6 +117,9 @@ int32 UAtlasFXSetupCommandlet::Main(const FString& Params)
 
 	// 标签刷新必须排在重扫之后：bForceRescan 会用文件头重建 AR 条目，把先推进去的标签冲掉。
 	RefreshAssetRegistryTags();
+
+	// PaperZD 特效预览扩展的反射自查（纯诊断，不影响命令成败）。
+	DumpPaperZDPreviewTargets();
 
 	// 自查：用和「创建 Niagara 系统」对话框一模一样的方式查一遍标签。
 	// （UTaggedAssetBrowserFilter_UserAssetTag::ModifyARFilterInternal 写的就是
@@ -543,5 +551,35 @@ void UAtlasFXSetupCommandlet::RefreshAssetRegistryTags()
 		{
 			Registry->AssetUpdateTags(System, EAssetRegistryTagsCaller::FullUpdate);
 		}
+	}
+}
+
+void UAtlasFXSetupCommandlet::DumpPaperZDPreviewTargets()
+{
+	// ① 播放器上那个 private 的 RegisteredRenderComponent（PaperZDAnimPlayer.h:52，UPROPERTY + 无 getter）。
+	//    预览扩展靠它认出「这是预览播放器」并拿到要挂特效的组件，反射不到就整个扩展失效。
+	{
+		const FObjectPropertyBase* Property = FindFProperty<FObjectPropertyBase>(
+			UPaperZDAnimPlayer::StaticClass(), TEXT("RegisteredRenderComponent"));
+		UE_LOG(LogAtlasFXSetup, Display, TEXT("PaperZD 预览自查 · 播放器 RegisteredRenderComponent 反射：%s"),
+			Property ? TEXT("OK") : TEXT("失败"));
+	}
+
+	// ② 用户实际在用的那条序列（Misaka 的 DefAtk，通知轨上挂的就是 TxSpawn）。
+	UPaperZDAnimSequence* Sequence = LoadObject<UPaperZDAnimSequence>(
+		nullptr, TEXT("/Game/GameActor2D/Misaka/AnimSequences/DefAtk.DefAtk"));
+	if (Sequence == nullptr)
+	{
+		UE_LOG(LogAtlasFXSetup, Warning, TEXT("PaperZD 预览自查 · 读不到序列 /Game/GameActor2D/Misaka/AnimSequences/DefAtk"));
+		return;
+	}
+
+	const TArray<UPaperZDAnimNotify_Base*>& Notifies = Sequence->GetAnimNotifies();
+	UE_LOG(LogAtlasFXSetup, Display, TEXT("PaperZD 预览自查 · 序列 %s（%.2f 秒）有 %d 条通知："),
+		*Sequence->GetName(), Sequence->GetTotalDuration(), Notifies.Num());
+
+	for (const UPaperZDAnimNotify_Base* Notify : Notifies)
+	{
+		FAtlasFXPaperZDPreview::DumpNotifyDiagnostics(Notify);
 	}
 }

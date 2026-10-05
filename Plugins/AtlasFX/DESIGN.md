@@ -837,3 +837,80 @@ used because the texture is being async built"**。搬资产让 DDC 失效 ⇒ �
 顺带记两条：`UPaperSprite::GetSourceTexture()`（`PaperSprite.cpp:1442-1470`，整段在 `#if WITH_EDITOR`）
 只认 `SourceTexture` 这个软引用、**不退回** `BakedSourceTexture`，而后者是 `protected`（`PaperSprite.h:103-104`）
 ⇒ 插件读不到（硬写会 `C2248`）。所以取贴图链是 `GetSourceTexture()` → DI 自己的 `AtlasTexture`。
+
+---
+
+## 18. PaperZD 序列编辑器特效预览（2026-10-05）
+
+### 18.1 起因
+
+用户原话：「然后你可以做一个扩展吗，给PaperZD做一下特效可预览，我用的特效通知是
+`Content/BaseC/ExCordLibrary/Notify/TxSpawn.uasset`。你能看懂的话就顺便做进插件吧，这样子也方便你制作预览」
+
+现象：在 PaperZD 的 AnimSequence 编辑器里播放动画，通知轨上的 `TxSpawn` 到点了，但视口里什么都不生成。
+
+### 18.2 为什么预览里通知不生成特效
+
+PaperZD 的预览**确实会触发通知**，卡在 OwningInstance 上：
+
+| 环节 | 出处 | 事实 |
+| --- | --- | --- |
+| 通知默认在编辑器里也触发 | `PaperZDAnimNotify_Base.cpp:19` | `bShouldFireInEditor = true;` |
+| 触发条件 | `PaperZDAnimPlayer.cpp:174` | `if (OwningInstance != nullptr \|\| Notify->bShouldFireInEditor)` |
+| 预览播放器怎么调 | `PaperZDAnimationSourceViewportClient.cpp:107` | `Player->TickPlayback(CurrentAnimSequencePtr.Get(), PlaybackTime, DeltaSeconds, bLooping);` —— **不传 OwningInstance** |
+| 通知拿到什么 | `PaperZDAnimNotify.cpp:53-56` | `OnReceiveNotify(OwningInstance)` ⇒ 预览里恒为 **nullptr** |
+
+而工程在用的 `TxSpawn` 是蓝图，第一步就是 `Cast<BI_2DCharAnimBP>(OwningInstance)`
+（资产里能读到 `K2Node_DynamicCast_AsBI_2DChar_Anim_BP` / `/Game/BaseC/ExCordLibrary/BIs/BI_2DCharAnimBP`），
+拿到 nullptr 直接跳过 ⇒ 什么都不生成。它依赖角色/AnimBP，而预览世界（`EWorldType::EditorPreview`）
+里只有 `PaperZDAnimationSourceViewportClient.cpp:36` 造的一个裸 `UPrimitiveComponent`，没有 AnimBP。
+
+**PaperZD 自带的 Niagara 通知能预览**，是因为它压根不看 OwningInstance，而是挂在
+`SequenceRenderComponent` 上生成（`PaperZDAnimNotify_NiagaraEffect.cpp:53-79`）：
+`SpawnSystemAttached(PSTemplate, SequenceRenderComponent.Get(), ...)` / 不挂接时
+`SpawnSystemAtLocation(SequenceRenderComponent.Get(), ...)`。
+
+### 18.3 扩展的做法（非侵入）
+
+放在编辑器模块 `AtlasFXEditor`：`Private/AtlasFXPaperZDPreview.h` + `.cpp`，模块启动时挂编辑器 ticker。
+
+1. **找预览播放器**：`TObjectIterator<UPaperZDAnimPlayer>`，用反射读私有的
+   `RegisteredRenderComponent`（`PaperZDAnimPlayer.h:52`，`UPROPERTY(Transient) TWeakObjectPtr<UPrimitiveComponent>`，
+   没有 getter），组件的世界 `WorldType == EWorldType::EditorPreview` 才算数。每 60 个 tick 扫一次
+   （`TObjectIterator` 要遍历对象表，不能每帧来）。
+2. **读时间**：`GetCurrentAnimSequence()` + `GetCurrentPlaybackTime()`（都是公开 API）。
+3. **算跨帧**：逐字复刻 `PaperZDAnimNotify.cpp:27-50` 的规则（含回绕 `bLooped` 与反向分支），
+   外加同一个 `bWasActiveLastFrame` 去重，保证边界上不会触发两次。
+4. **取 FX 数据**：反射。Niagara 系统**按类型找**（`FObjectPropertyBase::PropertyClass->IsChildOf(UNiagaraSystem::StaticClass())`，
+   蓝图里叫 `Niagara` 还是 `PSTemplate` 都认）；`Offset`/`Scale`（`FVector`）、`Rotation`（`FRotator`，也兼容 `FVector`）、
+   `NotAttach`（`FBoolProperty`）按名字找，找不到就用默认值。
+5. **生成**：挂接时 `SpawnSystemAttached(..., EAttachLocation::KeepRelativeOffset, /*bAutoDestroy*/true, ENCPoolMethod::None, true)`，
+   `NotAttach` 勾了则 `SpawnSystemAtLocation`。语义与 `TxSpawn` 蓝图一致。
+6. **收尾**：同一条通知重新触发（循环播放 / 来回拖时间轴）先 `DestroyComponent()` 上一次的；换序列、
+   播放器失效、模块卸载、CVar 关掉时全部收干净。
+
+**跳过原生通知**：类来自 `/Script/PaperZD` 且不是蓝图生成类的通知（`UPaperZDAnimNotify_NiagaraEffect`
+之类）本来就能预览，再生成一次就重了 ⇒ `ShouldIgnoreNotify()` 直接跳过。
+
+**不改任何工程资产、不改 PaperZD**。已排除的方案：给预览注入 OwningInstance（viewport client 里写死 nullptr，
+外部注入不进去）、改 `TxSpawn` 蓝图、改 PaperZD 本体（第三方插件，改了会被上游更新覆盖）。
+
+### 18.4 开关与边界
+
+* 控制台变量 `AtlasFX.PaperZD.PreviewFX`（默认 1，设 0 关闭并收掉已生成的特效）。
+* 预览世界只有一个（`PaperZDAnimationSourceViewportClient` 创建的那个），且它的播放器**永远**拿不到
+  OwningInstance ⇒ 不会和通知自身的逻辑重复生成。
+* 编辑器 ticker 与预览视口的刷新率不一定同频，极快的一次性特效在预览里可能看不出差别 —— 这是预览，不是最终效果。
+* 只认 `EWorldType::EditorPreview` ⇒ 游戏内（PIE）完全不参与，行为零影响。
+* **`Scale` 的工程约定**：`TxSpawn` 把 Scale 当单值缩放用，只填 X、Y/Z 留 0（Misaka 的 `DefAtk` 上实测
+  `Scale = 1.0 / 0.0 / 0.0`，见命令行自查日志）。原样交给 `SpawnSystemAttached` 会把特效压成一条线，
+  所以扩展在 Y/Z 同时为 0 时按等比缩放处理（三个都为 0 则当作 1）。换成别的通知时留意这条约定。
+* 自查手段：跑一次 `-run=AtlasFXSetup`，日志里会打印播放器反射结果、序列的通知清单、
+  每条通知解析出的 Niagara 系统与 Offset/Rotation/Scale/NotAttach（`DumpPaperZDPreviewTargets()`）。
+
+### 18.5 使用
+
+打开 AnimSequence（例如 `DefAtk`）→ 视口里播放 → 通知时间点到了就会看到特效。
+如果没反应，先看 Output Log 里有没有 `LogAtlasFXPreview: 接管 PaperZD 预览播放器...`；
+没有就是没找到预览播放器（检查 PaperZD 模块是否加载、预览视口是否在实时渲染）。
+

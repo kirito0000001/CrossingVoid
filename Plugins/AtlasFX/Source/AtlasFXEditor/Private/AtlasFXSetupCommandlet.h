@@ -38,4 +38,10 @@ private:
 
 	/** 把标签推进 Asset Registry。必须排在强制重扫之后，否则重扫会用文件头重建条目、把标签冲掉。 */
 	void RefreshAssetRegistryTags();
+
+	/**
+	 * 自查 PaperZD 特效预览扩展赖以工作的反射链：播放器上 private 的 RegisteredRenderComponent 能不能读到，
+	 * 以及用户实际在用的序列（Misaka 的 DefAtk）里那些通知能不能解析出 Niagara 系统与 Offset/Rotation/Scale/NotAttach。
+	 */
+	void DumpPaperZDPreviewTargets();
 };
