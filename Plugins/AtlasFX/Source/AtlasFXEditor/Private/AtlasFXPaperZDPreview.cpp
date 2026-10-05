@@ -5,6 +5,7 @@
 #include "AnimSequences/PaperZDAnimSequence.h"
 #include "AnimSequences/Players/PaperZDAnimPlayer.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/SceneComponent.h"
 #include "Containers/Ticker.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/World.h"
@@ -15,9 +16,6 @@
 #include "NiagaraSystem.h"
 #include "Notifies/PaperZDAnimNotify.h"
 #include "Notifies/PaperZDAnimNotify_Base.h"
-#include "PaperFlipbook.h"
-#include "PaperFlipbookComponent.h"
-#include "PaperSprite.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/UnrealType.h"
 
@@ -29,25 +27,43 @@ static TAutoConsoleVariable<int32> CVarAtlasFXPreviewFX(
 	TEXT("1 = 在 PaperZD 序列编辑器预览里自动生成通知上的 Niagara 特效（默认）；0 = 关闭。"),
 	ECVF_Default);
 
-static TAutoConsoleVariable<int32> CVarAtlasFXPreviewFootAlign(
-	TEXT("AtlasFX.PaperZD.FootAlign"),
+static TAutoConsoleVariable<int32> CVarAtlasFXPreviewMimicGame(
+	TEXT("AtlasFX.PaperZD.MimicGame"),
 	1,
-	TEXT("1 = 预览把特效对齐到精灵底边（脚底），与游戏里挂在角色根组件一致（默认）；0 = 不做任何位置换算。"),
+	TEXT("1 = 预览按游戏里的组件变换摆角色（精灵缩放 0.5、相对 Z +40），特效挂到与游戏根组件等价的替身上（默认）；0 = 原样显示。"),
 	ECVF_Default);
 
-// 预览与游戏唯一的差别是**挂点**：游戏挂在角色根组件（原点在脚底），预览只能挂渲染组件
-// （翻转书，原点在精灵轴心 = 画布中心）。AtlasFX.PaperZD.FootAlign 把这个差换算掉：
-// 偏移量 = 精灵底边相对翻转书原点的 Z（负值），从精灵烘好的渲染顶点算出来，**与当前帧无关**，
-// 对同一本翻转书恒定（实测 Misaka 的 DefAtk = -257 cm，与 640 px 画布 + 中心轴心吻合）。
+static TAutoConsoleVariable<float> CVarAtlasFXPreviewSpriteScale(
+	TEXT("AtlasFX.PaperZD.SpriteScale"),
+	0.5f,
+	TEXT("角色精灵组件在游戏里的缩放（用户确认全角色统一，默认 0.5）。"),
+	ECVF_Default);
+
+static TAutoConsoleVariable<float> CVarAtlasFXPreviewSpriteZ(
+	TEXT("AtlasFX.PaperZD.SpriteZ"),
+	40.0f,
+	TEXT("角色精灵组件在游戏里的相对 Z（用户确认全角色统一，默认 40 cm）。"),
+	ECVF_Default);
+
+// 2026-10-05 定案（用户选择「让预览模仿游戏」）：预览与游戏对不上的根因是**两套坐标** ——
+//   游戏：角色根组件（缩放 1，原点在脚底）→ 精灵组件（相对 (0,0,+40)，缩放 0.5）；
+//         特效挂在**根组件**上，不继承那 0.5 ⇒ 角色 2.57 m、特效按 1:1 的尺寸。
+//   预览：PaperZD 自己建的翻转书是 **1:1 + 原点** ⇒ 角色 5.14 m ⇒ 在预览里看着正好的尺寸，
+//         到游戏里就「2 倍超出」（用户实测）。两边的差不是「挂点差 2.57 m」那么单一，
+//         而是**缩放 + 偏移一起**造成的。
+// ⇒ 预览改为：翻转书按 (0,0,+40) × 0.5 摆（画面与游戏一致），并在它下面挂一个**根组件替身**
+//   （相对 (0,0,-40/0.5 = -80)、相对缩放 1/0.5 = 2 ⇒ 世界变换 = 游戏里的根组件：
+//   原点在脚底、世界缩放 1），特效一律挂到替身上 ⇒ 位置与尺寸都与游戏一致。
+//   这三个数来自用户：0.5 缩放与 +40 偏移是**全角色统一**的（改不了，所以让预览来适配它们）。
 //
 // 这里曾经挂过两个补偿，记下来免得再走一遍：
 //   ① AtlasFX.PaperZD.PreviewYaw（曾默认 90）：误判「预览相机沿 Y、游戏相机沿 X」。
 //      实际两个相机**同轴**（都沿 Y 轴看），任何 Yaw 补偿都会让预览与游戏不一致。
 //      最初「看不见」的真因是网格模板里的 MeshYaw = -90 把面片转成了侧对镜头
 //      （**游戏里也一样是一条缝**），模板已改回 0，见 DFX/Modules/M_SpriteAtlasSize.dfm。
-//   ② AtlasFX.PaperZD.PreviewFootAlign（曾默认 1，2026-10-05 删过一次）：第一版用**当前帧**的
-//      包围盒算脚底，值随帧/随序列乱跳（-257 / -300 / -261 / -279 cm）⇒ 已换成上面这个与帧
-//      无关的算法后重新启用。若要彻底不换算（改挂点或改精灵轴心），见 DESIGN.md §18.4「挂点」。
+//   ② AtlasFX.PaperZD.FootAlign（曾默认 1）：用「精灵底边相对翻转书原点的 Z」把特效压到脚底。
+//      它只在「预览保持 1:1」的前提下成立，且把**缩放差**整个漏掉了（那次「预览对、游戏错」就是它）；
+//      换成替身方案后世界坐标本来就对，已删除。见 DESIGN.md §18.4。
 
 namespace
 {
@@ -83,11 +99,81 @@ namespace
 
 		/** 这条序列是不是已经把「一条都没认出来」的逐条诊断打过一次了，免得刷屏。 */
 		bool bDumpedNotifyDiagnostics = false;
+
+		/** 与游戏角色根组件等价的那个替身（见文件头注释），特效都挂在它下面。 */
+		TWeakObjectPtr<USceneComponent> RootStandIn;
 	};
 
 	TArray<FPreviewPlayerState> PlayerStates;
 	FTSTicker::FDelegateHandle TickerHandle;
 	int32 TicksSincePlayerScan = PlayerScanInterval;
+
+	// ------------------------------------------------------------------
+	// 让预览摆成游戏的样子（见文件头注释）
+	// ------------------------------------------------------------------
+
+	/** 游戏里精灵组件的相对变换（用户确认全角色统一）。 */
+	void GetGameSpriteTransform(float& OutScale, float& OutZ)
+	{
+		OutScale = FMath::Max(CVarAtlasFXPreviewSpriteScale.GetValueOnAnyThread(), 0.001f);
+		OutZ = CVarAtlasFXPreviewSpriteZ.GetValueOnAnyThread();
+	}
+
+	/** 每帧把预览翻转书摆成游戏里的样子（PaperZD 自己可能重设过变换，所以每帧都来一遍）。 */
+	void ApplyGameLikeSpriteTransform(UPrimitiveComponent* RenderComponent)
+	{
+		if (!RenderComponent || CVarAtlasFXPreviewMimicGame.GetValueOnAnyThread() == 0)
+		{
+			return;
+		}
+
+		float SpriteScale = 1.0f;
+		float SpriteZ = 0.0f;
+		GetGameSpriteTransform(SpriteScale, SpriteZ);
+		RenderComponent->SetRelativeLocation(FVector(0.0f, 0.0f, SpriteZ));
+		RenderComponent->SetRelativeScale3D(FVector(SpriteScale));
+	}
+
+	/**
+	 * 取（必要时新建）与游戏角色根组件等价的替身：挂在翻转书下面，
+	 * 相对位置 (0,0,-Z/Scale)、相对缩放 1/Scale ⇒ 世界变换 = 游戏里那个根组件。
+	 * 关掉 MimicGame 时直接返回翻转书本身（退回旧行为）。
+	 */
+	USceneComponent* EnsureRootStandIn(FPreviewPlayerState& State, UPrimitiveComponent* RenderComponent)
+	{
+		if (State.RootStandIn.IsValid())
+		{
+			return State.RootStandIn.Get();
+		}
+		if (!RenderComponent || CVarAtlasFXPreviewMimicGame.GetValueOnAnyThread() == 0)
+		{
+			return RenderComponent;
+		}
+
+		UWorld* World = RenderComponent->GetWorld();
+		if (!World)
+		{
+			return RenderComponent;
+		}
+
+		float SpriteScale = 1.0f;
+		float SpriteZ = 0.0f;
+		GetGameSpriteTransform(SpriteScale, SpriteZ);
+
+		USceneComponent* StandIn = NewObject<USceneComponent>(RenderComponent, NAME_None, RF_Transient);
+		StandIn->SetupAttachment(RenderComponent);
+		StandIn->SetRelativeLocation(FVector(0.0f, 0.0f, -SpriteZ / SpriteScale));
+		StandIn->SetRelativeScale3D(FVector(1.0f / SpriteScale));
+		StandIn->RegisterComponentWithWorld(World);
+		State.RootStandIn = StandIn;
+
+		UE_LOG(LogAtlasFXPreview, Log,
+			TEXT("预览根组件替身就位：翻转书按缩放 %.2f / 相对 Z %.1f 摆，替身世界位置 %s、世界缩放 %s（游戏里特效挂在角色根组件上，不继承精灵缩放）。"),
+			SpriteScale, SpriteZ,
+			*StandIn->GetComponentLocation().ToCompactString(),
+			*StandIn->GetComponentScale().ToCompactString());
+		return StandIn;
+	}
 
 	// ------------------------------------------------------------------
 	// 反射读属性
@@ -169,7 +255,7 @@ namespace
 		return bNativePaperZDClass && !NotifyClass->IsChildOf(UBlueprintGeneratedClass::StaticClass());
 	}
 
-	/** 收掉某个玩家身上所有已生成的特效。 */
+	/** 收掉某个玩家身上所有已生成的特效（连根组件替身一起）。 */
 	void DestroySpawnedComponents(FPreviewPlayerState& State)
 	{
 		for (FNotifyRuntimeState& NotifyState : State.NotifyStates)
@@ -180,6 +266,12 @@ namespace
 			}
 			NotifyState.SpawnedComponent = nullptr;
 		}
+
+		if (USceneComponent* StandIn = State.RootStandIn.Get())
+		{
+			StandIn->DestroyComponent();
+		}
+		State.RootStandIn = nullptr;
 	}
 
 	void DestroyAllSpawnedComponents()
@@ -207,35 +299,15 @@ namespace
 	}
 
 	/**
-	 * 精灵底边相对翻转书原点的 Z（负值）。
-	 *
-	 * 游戏把特效挂在角色根组件（原点 = 脚底）上，预览只能挂翻转书（原点 = 精灵轴心，
-	 * 通常是画布中心），同一个 Offset 因此差出这一段。这里从精灵烘好的渲染顶点算底边位置，
-	 * **与当前播放到第几帧无关**，所以对一本翻转书是恒定值（旧版用当前帧包围盒才不稳定）。
-	 */
-	float ComputeFootOffsetZ(UPrimitiveComponent* RenderComponent)
-	{
-		UPaperFlipbookComponent* FlipbookComponent = Cast<UPaperFlipbookComponent>(RenderComponent);
-		const UPaperFlipbook* Flipbook = FlipbookComponent ? FlipbookComponent->GetFlipbook() : nullptr;
-		const UPaperSprite* Sprite = (Flipbook && Flipbook->GetNumFrames() > 0) ? Flipbook->GetSpriteAtFrame(0) : nullptr;
-		if (!Sprite)
-		{
-			return 0.0f;
-		}
-
-		const FBoxSphereBounds SpriteBounds = Sprite->GetRenderBounds();
-		return SpriteBounds.Origin.Z - SpriteBounds.BoxExtent.Z;
-	}
-
-	/**
 	 * 为一条通知生成特效，逐条对齐 TxSpawn 蓝图：
 	 *   TXComp = 人物根组件；NotAttach 为真走世界生成，否则挂到根组件上；
 	 *   位置带「1P 标签翻转」；缩放一律靠 spawn 之后的 SetRelativeScale3D。
 	 */
-	void SpawnForNotify(FNotifyRuntimeState& NotifyState, const UPaperZDAnimNotify_Base* Notify, UPrimitiveComponent* RenderComponent)
+	void SpawnForNotify(FPreviewPlayerState& State, FNotifyRuntimeState& NotifyState, const UPaperZDAnimNotify_Base* Notify, UPrimitiveComponent* RenderComponent)
 	{
 		UNiagaraSystem* System = GetNotifySystem(Notify);
-		UWorld* World = RenderComponent ? RenderComponent->GetWorld() : nullptr;
+		USceneComponent* AttachRoot = EnsureRootStandIn(State, RenderComponent);
+		UWorld* World = AttachRoot ? AttachRoot->GetWorld() : nullptr;
 		if (!System || !World)
 		{
 			UE_LOG(LogAtlasFXPreview, Warning, TEXT("通知 %s 到点了但生成不了：Niagara 系统 = %s，世界 = %s"),
@@ -267,18 +339,14 @@ namespace
 		const float Sign = bFirstPerson ? 1.0f : -1.0f;
 		const FVector SignedOffset(Offset.X * Sign, Offset.Y * Sign, Offset.Z);
 
-		// 挂点差：游戏挂在角色根组件（脚底），预览只能挂翻转书（画布中心）。
-		// 换算量由精灵自己算，与当前帧无关（见 ComputeFootOffsetZ）。
-		const FVector FootOffset(0.0f, 0.0f,
-			(CVarAtlasFXPreviewFootAlign.GetValueOnAnyThread() != 0) ? ComputeFootOffsetZ(RenderComponent) : 0.0f);
-
 		UNiagaraComponent* Spawned = nullptr;
 		if (bNotAttach)
 		{
 			// 蓝图：Spawn System at Location（世界位置 + 偏移，Scale 直接给，池 = AutoRelease）。
+			// 世界位置取的是**挂点**（替身 = 游戏里的角色根组件），不是翻转书本身。
 			Spawned = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
 				World, System,
-				RenderComponent->GetComponentLocation() + FootOffset + SignedOffset,
+				AttachRoot->GetComponentLocation() + SignedOffset,
 				Rotation,
 				Scale,
 				true, true, ENCPoolMethod::AutoRelease, true);
@@ -286,15 +354,15 @@ namespace
 		else
 		{
 			// 蓝图：Spawn System Attached —— Location 用的是**没动过的 Offset**
-			// （蓝图里挂点这一支不做镜像，镜像只出现在 NotAttach 的「计算真正位置」里），
-			// 这里只额外加上「挂点差」FootOffset。Location Type 与蓝图一致：Snap to Target,
-			// Including Scale（没传 Scale 时它与 KeepRelativeOffset 在引擎里等价，
-			// 见 NiagaraFunctionLibrary.cpp:254-281）。
+			// （蓝图里挂点这一支不做镜像，镜像只出现在 NotAttach 的「计算真正位置」里）。
+			// 挂点是替身（世界变换 = 游戏里的根组件），所以这里不需要任何位置补偿。
+			// Location Type 与蓝图一致：Snap to Target, Including Scale（没传 Scale 时它与
+			// KeepRelativeOffset 在引擎里等价，见 NiagaraFunctionLibrary.cpp:254-281）。
 			// 注意这个函数**没有 Scale 参数**，蓝图也是靠随后那句 SetRelativeScale3D 定缩放的，
 			// 别把 scale 塞进 spawn。
 			Spawned = UNiagaraFunctionLibrary::SpawnSystemAttached(
-				System, RenderComponent, NAME_None,
-				FootOffset + Offset, Rotation,
+				System, AttachRoot, NAME_None,
+				Offset, Rotation,
 				EAttachLocation::SnapToTargetIncludingScale,
 				true, true, ENCPoolMethod::None, true);
 		}
@@ -305,10 +373,11 @@ namespace
 			Spawned->SetRelativeScale3D(Scale);
 
 			UE_LOG(LogAtlasFXPreview, Log,
-				TEXT("预览生成特效：%s（通知 %s，时间 %.3f 秒，%s，Offset %s，Rotation %s，Scale %s，脚底换算 %.1f cm，组件 %s）"),
+				TEXT("预览生成特效：%s（通知 %s，时间 %.3f 秒，%s，挂点 %s，Offset %s，Rotation %s，Scale %s，组件 %s）"),
 				*System->GetName(), *Notify->GetClass()->GetName(), Notify->Time,
-				bNotAttach ? TEXT("世界生成") : TEXT("挂在渲染组件上"),
-				*Offset.ToString(), *Rotation.ToString(), *Scale.ToString(), FootOffset.Z, *Spawned->GetName());
+				bNotAttach ? TEXT("世界生成") : TEXT("挂在挂点上"),
+				*AttachRoot->GetName(),
+				*Offset.ToString(), *Rotation.ToString(), *Scale.ToString(), *Spawned->GetName());
 		}
 	}
 
@@ -418,6 +487,10 @@ namespace
 	void UpdatePlayer(FPreviewPlayerState& State)
 	{
 		UPaperZDAnimPlayer* Player = State.Player.Get();
+
+		// 先把角色摆成游戏里的样子（缩放 0.5 / Z +40）；放在早退分支之前，任何情况下都生效。
+		ApplyGameLikeSpriteTransform(GetRenderComponent(Player));
+
 		const UPaperZDAnimSequence* Sequence = Player->GetCurrentAnimSequence();
 		const FString SequencePath = Sequence ? Sequence->GetPathName() : FString();
 		if (SequencePath != State.SequencePath)
@@ -507,7 +580,7 @@ namespace
 			{
 				UE_LOG(LogAtlasFXPreview, Log, TEXT("通知 %s 到点（通知时间 %.3f 秒，当前播放 %.3f 秒）。"),
 					*Notify->GetClass()->GetName(), NotifyTime, Playtime);
-				SpawnForNotify(NotifyState, Notify, RenderComponent);
+				SpawnForNotify(State, NotifyState, Notify, RenderComponent);
 			}
 		}
 	}
