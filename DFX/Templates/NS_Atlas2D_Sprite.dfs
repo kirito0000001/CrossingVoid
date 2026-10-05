@@ -1,5 +1,6 @@
 // NS_Atlas2D_Sprite —— AtlasFX「精灵渲染器」模板（文本源，DreamFX 生成）。
-// 默认挂 Defatk 闪电图集当示例：换成自己的图集只需改下面 Properties 里的 Flipbook 路径。
+// 默认**不挂**图集（Atlas 留空）：模板不引用工程里的任何资产，随便删示例文件都不会被牵连。
+// 用的时候把下面 Properties 里 Atlas 的 Flipbook 指到自己的图集即可。
 //
 // 数据层：AtlasFX 插件的 C++ 数据接口 UNiagaraDataInterfaceSpriteAtlas（只支持 CPU 模拟）。
 // 播放层：/AtlasFX/Modules/Play_SpriteAtlas —— 由 DFX/Modules/M_PlaySpriteAtlas.dfm 生成，
@@ -30,20 +31,24 @@ System(Name="Templates/NS_Atlas2D_Sprite", Root="Plugin.AtlasFX")
         // 数据接口参数的配置是「一个 JSON 对象字符串」。对象引用写裸路径字符串
         // （导出器会写成 {"refPath":"..."}，适配层在喂给引擎前会把它改回裸字符串，两种都收）。
         //
+        // 这里**故意留空**（裸声明 = 运行时再填的空槽）：模板不引用工程里的任何图集资产，
+        // 所以你想删哪个示例文件都行，模板不会被牵连。用的时候填成自己的 Flipbook，例如：
+        //   DI<SpriteAtlas> Atlas = "{\"Flipbook\":\"/Game/你的目录/你的Flipbook.你的Flipbook\"}";
+        //
         // 帧表**不再手写**：DI 在资产加载时（UNiagaraDataInterfaceSpriteAtlas::PostLoad）
         // 从 Flipbook 自动烘出「图集矩形 / 画布矩形 / 画布尺寸 / 贴图尺寸 / 帧率」并存回资产，
         // 源签名（Flipbook 路径 + 帧数 + 帧率 + 每帧 Sprite 的源矩形）没变就不重复烘。
-        // ⇒ 换图集 = 只改下面这一行 Flipbook 路径。
+        // ⇒ 换图集 = 只改上面那一行 Flipbook 路径。
         // 手工兜底数据源（AtlasTexture + ManualFrameRects/ManualCanvasRects/ManualCanvasSize/ManualFps）
         // 仍然可用，那种情况下不自动烘。
-        DI<SpriteAtlas> Atlas = "{\"Flipbook\":\"/Game/AssetMaterial/FXs/通用Flipbook/Defatk1.Defatk1\"}";
+        DI<SpriteAtlas> Atlas;
 
         float SizeScale  = 0.5 [ Group="图集"; SortPriority=10;
             Description="1 像素对应多少世界单位（1.0 = 1 厘米，即 UE 默认单位）。面片尺寸 = 目标尺寸 × 这个值：默认 0.5 时画布 928×640 = 4.64×3.2 米，闪电本体约 0.85～1.8 米；想要更大直接乘。" ];
         float FitFrame   = 0.0 [ Group="图集"; SortPriority=12;
             Description="面片取哪个尺寸：0 = 画布还原（面片 = 整块画布 928×640，帧放回它在画布里的位置，默认）；1 = 铺满（面片 = 当前帧自己的矩形）。" ];
         float PlayMode   = 0.0 [ Group="图集"; SortPriority=15;
-            Description="播放模式：0 = 按 Flipbook 帧率（默认，Defatk1 = 15 帧/秒）；1 = 按粒子生命长度播完一遍；2 = 用 FrameIndex 直接指定帧号。" ];
+            Description="播放模式：0 = 按 Flipbook 帧率（默认）；1 = 按粒子生命长度播完一遍；2 = 用 FrameIndex 直接指定帧号。" ];
         float StartFrame = 0.0 [ Group="图集"; SortPriority=20;
             Description="起始帧偏移。接 Random Float in Range 就是随机起帧。" ];
         float FrameIndex = 0.0 [ Group="图集"; SortPriority=25;

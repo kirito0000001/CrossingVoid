@@ -1,5 +1,6 @@
 // NS_Atlas2D_Mesh —— AtlasFX「网格渲染器」模板（文本源，DreamFX 生成）。
-// 默认挂 Defatk 闪电图集当示例：换成自己的图集只需改下面 Properties 里的 Flipbook 路径。
+// 默认**不挂**图集（Atlas 留空）：模板不引用工程里的任何资产，随便删示例文件都不会被牵连。
+// 用的时候把下面 Properties 里 Atlas 的 Flipbook 指到自己的图集即可。
 //
 // 和精灵模板（NS_Atlas2D_Sprite）的区别只有三处：
 //   1. 多挂一个 /AtlasFX/Modules/Sprite_Atlas_Size —— Mesh 渲染器读 Particles.Scale，
@@ -25,14 +26,16 @@ System(Name="Templates/NS_Atlas2D_Mesh", Root="Plugin.AtlasFX")
     }
 
     Properties = {
-        DI<SpriteAtlas> Atlas = "{\"Flipbook\":\"/Game/AssetMaterial/FXs/通用Flipbook/Defatk1.Defatk1\"}";
+        // 故意留空（裸声明 = 运行时再填的空槽）：模板不引用工程里的图集资产。用的时候填自己的 Flipbook：
+        //   DI<SpriteAtlas> Atlas = "{\"Flipbook\":\"/Game/你的目录/你的Flipbook.你的Flipbook\"}";
+        DI<SpriteAtlas> Atlas;
 
         float SizeScale  = 0.5 [ Group="图集"; SortPriority=10;
             Description="1 像素对应多少世界单位（1.0 = 1 厘米，即 UE 默认单位）。面片尺寸 = 目标尺寸 × 这个值：默认 0.5 时画布 928×640 = 4.64×3.2 米，闪电本体约 0.85～1.8 米；想要更大直接乘。" ];
         float FitFrame   = 0.0 [ Group="图集"; SortPriority=12;
             Description="面片取哪个尺寸：0 = 画布还原（面片 = 整块画布 928×640，默认）；1 = 铺满（面片 = 当前帧自己的矩形）。" ];
         float PlayMode   = 0.0 [ Group="图集"; SortPriority=15;
-            Description="播放模式：0 = 按 Flipbook 帧率（默认，Defatk1 = 15 帧/秒）；1 = 按粒子生命长度播完一遍；2 = 用 FrameIndex 直接指定帧号。" ];
+            Description="播放模式：0 = 按 Flipbook 帧率（默认）；1 = 按粒子生命长度播完一遍；2 = 用 FrameIndex 直接指定帧号。" ];
         float StartFrame = 0.0 [ Group="图集"; SortPriority=20;
             Description="起始帧偏移。接 Random Float in Range 就是随机起帧。" ];
         float FrameIndex = 0.0 [ Group="图集"; SortPriority=25;

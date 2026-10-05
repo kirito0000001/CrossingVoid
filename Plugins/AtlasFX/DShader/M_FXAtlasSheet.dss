@@ -29,8 +29,12 @@
 // ZDBridge 手搓的那张同用途材质也是这么配的（ZDBridgeEffectNiagara.cpp:229 Material->TwoSided = true）。
 #pragma material(ShadingModel = Unlit, BlendMode = Additive, TwoSided = true, bUsedWithNiagaraSprites = true, bUsedWithNiagaraMeshParticles = true, Backend = Graph)
 
-/// @group Atlas   @desc 图集贴图（手工兜底模式用；Flipbook 模式同样用它）
-/// @default /Game/AssetMaterial/FXs/通用Flipbook/Textures/Defatk
+// 默认贴图**故意留空**（None）：插件资产不引用工程里的任何东西，示例图集随便删。
+// 用的时候：直接改这个材质的 Sheet，或者建材质实例只覆盖 Sheet（推荐 —— 一个图集一个 MI）。
+// 留空时 UE 会用引擎的默认贴图兜底，画面是纯色而不是报错。
+// 注意：这里**不写** `/// @default`（写了就必须给一个能加载的资产；`None` 会被 DSH8218 拒绝）。
+// 不写 = 属性保持引擎默认的空值，正好是我们想要的效果。
+/// @group Atlas   @desc 图集贴图：用哪个图集就指哪张（Flipbook 模式和手工兜底模式都用它）
 uniform Texture2D Sheet;
 
 // ============================================================================
