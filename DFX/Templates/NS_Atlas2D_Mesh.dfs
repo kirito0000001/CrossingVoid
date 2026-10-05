@@ -44,10 +44,10 @@ System(Name="Templates/NS_Atlas2D_Mesh", Root="Plugin.AtlasFX")
             Description="播放速率倍率，负值倒放。" ];
 
         // ---- Mesh 渲染器专属 ----
-        // 朝向（MeshYaw）**故意不做成用户参数**：本工程的答案恒为 -90，写死在下面的模块调用里。
-        // 做成用户参数只会多一个面板行，而且改它的默认值**不会**刷新资产里的存量值
-        // （重编不重置用户参数 —— 实测踩过，面板上会一直显示旧值，看着像 bug）。
-        // 换网格（比如作者化成「法线 X、宽 Y、高 Z」的工程面片）时直接改下面调用里的 -90.0 即可。
+        // 朝向（MeshYaw）**故意不做成用户参数**：本工程的答案恒为 0（面片自然朝向即正对镜头），
+        // 写死在下面的模块调用里。做成用户参数只会多一个面板行，而且改它的默认值**不会**
+        // 刷新资产里的存量值（重编不重置用户参数 —— 实测踩过，面板上会一直显示旧值，看着像 bug）。
+        // 换网格（比如法线在 X 上的工程面片）或画面镜像时，直接改下面调用里的 0.0 即可。
         float DepthScale = 1.0 [ Group="图集|网格"; SortPriority=40;
             Description="厚度（网格局部 Y 方向的缩放）。真正的平面网格保持 1.0；拿 Cube 当薄片用时调小，例如 0.05 = 5 厘米厚。" ];
     }
@@ -114,16 +114,17 @@ System(Name="Templates/NS_Atlas2D_Mesh", Root="Plugin.AtlasFX")
                 Loop       = 0.0
             );
 
-            // ⚠️ MeshYaw 显式写死 -90.0，**不要**传 User.MeshYaw：
+            // ⚠️ MeshYaw 显式写死 0.0，**不要**传 User.MeshYaw：
             //    资产里的用户参数 MeshYaw 还存着旧值（重编不会重置用户参数 —— 实测踩过），
             //    传它就可能把面片转成侧对镜头 ⇒ 完全看不见。
-            //    -90 的含义：FXDefault 的面法线在局部 Y 上，绕 Z 转 -90° 后法线落到 X 上，
-            //    正对本工程 2D 相机（沿 X 轴看）。配合下面的 FacingMode 默认值，
+            //    0 的含义：FXDefault 的面法线在局部 Y 上，本工程 2D 相机也沿 Y 轴看
+            //    （Paper2D 侧视；PaperZD 预览相机 (0,-100,0) 朝 +Y，与游戏同轴），
+            //    所以面片保持自然朝向就正对镜头，不需要任何补偿。配合下面的 FacingMode 默认值，
             //    面片就固定在发射器局部平面里、并可以跟着发射器/挂点一起转。
             Sprite_Atlas_Size(
                 MeshSize   = (92.8, 64.0),
                 DepthScale = User.DepthScale,
-                MeshYaw    = -90.0
+                MeshYaw    = 0.0
             );
         }
 
@@ -132,8 +133,8 @@ System(Name="Templates/NS_Atlas2D_Mesh", Root="Plugin.AtlasFX")
             // 用工程自己的面片（ZDBridge 插件里的 FXDefault）而不是引擎自带 Cube。
             // FXDefault 是一张平躺在 X–Z 平面里的面片：**面法线在局部 Y 上**，
             // 宽沿局部 X（92.8）、高沿局部 Z（64.0），轴心在底边。
-            // 本工程 2D 相机沿 X 轴看（见 Leng刀光 里 AddVelocity 沿 Y 飞的写法），
-            // 所以要靠 Sprite_Atlas_Size 的 MeshYaw = -90 把法线从 Y 转到 X。
+            // 本工程 2D 相机沿 Y 轴看（Paper2D 侧视：X 左右、Z 上下、Y 景深），
+            // 面片法线正好也在 Y 上 ⇒ **自然朝向就正对镜头**，Sprite_Atlas_Size 传 MeshYaw = 0。
             Meshes     = ["/ZDBridge/FX/FXDefault"];
 
             // ⚠️ 网格渲染器**没有** Material 字段（NiagaraMeshRendererProperties.h:196
@@ -172,8 +173,8 @@ System(Name="Templates/NS_Atlas2D_Mesh", Root="Plugin.AtlasFX")
             //   CameraPlane  = 每帧朝相机 ⇒ **特效永远转不动它**（CameraPlane 下
             //                  Particles.MeshOrientation 写了也白写），而且始终跟随相机。
             //                  实测现象：拖动视口时面片跟着相机转、色彩线抖动。
-            // 我们要的是前者：2D 特效的面片应当固定在发射器局部平面里，由 MeshYaw 摆正到
-            // 游戏相机方向，而不是让编辑器自由相机牵着走。
+            // 我们要的是前者：2D 特效的面片应当固定在发射器局部平面里、朝向由面片自身的
+            // 自然朝向决定（本工程里法线就在 Y 上，正好对着相机），而不是让编辑器自由相机牵着走。
             SortMode = ViewDepth;
 
             // 排序：和 Leng刀光 一样按归一化年龄排，同一时刻的帧前后关系稳定。

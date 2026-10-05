@@ -39,17 +39,23 @@
 // ⇒ Default = 完全不套朝向矩阵：网格保持自己的局部朝向，可以被特效旋转，配合发射器
 //   LocalSpace = true，面片跟着发射器/挂点一起转 —— 2D 特效要的就是这个。
 //
-// 本工程面片法线在局部 Y 上，而 2D 相机沿 X 轴看（见 Leng刀光 里 AddVelocity 沿 Y 飞），
-// 所以默认 **MeshYaw = -90.0**：绕 Z 转 -90° 把法线从 Y 转到 X。
+// 本工程面片 /ZDBridge/FX/FXDefault 法线在局部 Y 上，而本工程的 2D 相机**沿 Y 轴看**
+// （Paper2D 侧视约定：X = 左右、Z = 上下、Y = 景深；PaperZD 序列编辑器的预览相机在
+//   (0,-100,0) 朝 +Y，与游戏相机同轴 —— 2026-10-05 由用户在预览里实测确认：
+//   预览里把补偿设成 0 时，看到的画面与游戏里**完全一致**）。
+// 所以面片**保持自然朝向**即可：默认 **MeshYaw = 0.0**。
+// 工程内可对照的活例子：/Game/GameActor2D/SAO_Kirito/ExAsset/Leng刀光 也是网格渲染器，
+// 它**不写** Particles.MeshOrientation（= 自然朝向），在游戏里正对镜头。
 //
 // ⚠️ 两个开关必须配对，否则面片会侧对镜头而**完全看不见**（引擎不报任何错，日志一个字都没有）：
-//       FacingMode = Default（不写）+ MeshYaw = -90   ← 本工程用这套
+//       FacingMode = Default（不写）+ MeshYaw = 0     ← 本工程用这套
 //       FacingMode = CameraPlane      + MeshYaw = 0
-//    历史上「什么都看不见」就是错配成 CameraPlane + (-90) 造成的：朝向矩阵已经让面片正对
-//    相机，多写的 -90 又把它转成一条线。当时误判成「Particles.MeshOrientation 是凶手」。
+//    历史上「什么都看不见」有两个成因，别再踩：
+//      ① 错配成 CameraPlane + 非 0：朝向矩阵已经让面片正对相机，多写的旋转又把它转成一条线；
+//      ② 2026-10-05 实测：把 MeshYaw 写成 -90 本身就是错的 —— 它把法线从 Y 转到 X，
+//         与相机轴垂直，于是**游戏里**和 PaperZD 预览里都只剩一条缝（不是只有预览坏）。
 //
-// MeshYaw 留作旋钮：换成作者化好的工程面片（法线 X、宽 Y、高 Z）就改回 0.0；
-// 画面左右镜像时把符号翻过来（+90）。
+// MeshYaw 留作旋钮：画面左右镜像时改 180；换成作者化好的、法线在 X 上的工程面片时改 -90。
 Module(Name="Modules/Sprite_Atlas_Size", Root="Plugin.AtlasFX")
 {
     Settings = {
@@ -63,7 +69,7 @@ Module(Name="Modules/Sprite_Atlas_Size", Root="Plugin.AtlasFX")
         Vector2 MinSize  = (92.8, 64.0) [ Description="尺寸下限（世界单位）。⚠️ Particles.SpriteSize 一旦是 0，算出来的宽度就是 0 —— 面片会静默消失且不报任何错。这个下限保证面片永远可见。排查用的判据：面片以这个尺寸出现 = 上游 SpriteSize 是 0。" ];
         float   DepthScale   = 1.0  [ Description="厚度方向的缩放（网格局部 Y）。真正的平面网格保持 1.0；拿 Cube 当薄片用时调小，例如 0.05 = 5 厘米厚。" ];
         float   UniformScale = 1.0  [ Description="宽高再整体乘一个倍率，不影响厚度。" ];
-        float   MeshYaw      = -90.0 [ Description="绕 Z 轴的朝向修正（度）。工程面片 /ZDBridge/FX/FXDefault 的面法线在局部 Y 上，而本工程 2D 相机沿 X 轴看，所以要 -90 把法线转到 X；换成作者化好的工程面片（法线 X、宽 Y、高 Z）就改回 0.0。⚠️ 必须和渲染器的 FacingMode 配对：Default（不写）配 -90，CameraPlane 配 0；配错会让面片侧对镜头而完全看不见。" ];
+        float   MeshYaw      = 0.0 [ Description="绕 Z 轴的朝向修正（度）。工程面片 /ZDBridge/FX/FXDefault 的面法线在局部 Y 上，本工程 2D 相机也沿 Y 轴看，所以**保持 0.0**（自然朝向）即可。画面左右镜像时改成 180；换成法线在 X 上的工程面片时改成 -90。⚠️ 必须和渲染器的 FacingMode 配对：Default（不写）配 0，CameraPlane 也配 0；配错会让面片侧对镜头而完全看不见。" ];
     }
 
     Body = {

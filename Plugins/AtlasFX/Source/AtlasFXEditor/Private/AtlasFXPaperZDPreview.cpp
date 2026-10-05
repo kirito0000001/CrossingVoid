@@ -26,17 +26,19 @@ static TAutoConsoleVariable<int32> CVarAtlasFXPreviewFX(
 	TEXT("1 = 在 PaperZD 序列编辑器预览里自动生成通知上的 Niagara 特效（默认）；0 = 关闭。"),
 	ECVF_Default);
 
-// PaperZD 的预览视口是「X 向右、Z 向上」，也就是相机沿 Y 轴看；而地图视口和工程里的 2D 相机都沿 X 轴看
-// （证据：Leng刀光 用 Y 轴速度做横向飞行，角色和特效也都是朝 X 摆的）。网格模板里的 MeshYaw = -90 是
-// 按游戏相机摆的面片，原样放进预览就是侧对镜头 —— 一片薄影，等于看不见。
-// 所以预览时给生成出来的组件再叠一个 Yaw，把「游戏的屏幕平面」转成「预览的屏幕平面」：
-// 特效的横向（局部 Y）转到世界 X，面片正对镜头，运动方向也和游戏里一致。精灵渲染器是公告板，
-// 加不加都能看见，但加上之后运动方向同样和游戏对齐，所以默认一起加。设 0 可关掉。
-// 正负号决定看到面片的哪一面：+90 看到的是游戏里那一面，-90 是镜像（实测 -90 是反的）。
+// 2026-10-05 实测结论（用户在预览里逐值试出来的）：**预览相机与游戏相机同轴**（都沿 Y 轴看，
+// PaperZD 预览相机在 (0,-100,0) 朝 +Y），所以预览里生成的特效**不需要任何朝向补偿** ——
+// 把 AtlasFX.PaperZD.PreviewYaw 设成 0 时，看到的画面与游戏里完全一致。
+// 早先「预览沿 Y、游戏沿 X」的判断是误判，两个现象被它带偏了：
+//   ① 最初「看不见」的真因是每帧重建把刚生成的组件立刻收掉了（已由 SequencePath 那版修掉）；
+//   ② 网格模板里 MeshYaw = -90 本身就把面片转成了侧对镜头 —— **游戏里也一样是一条缝**，
+//      已把模块默认与网格模板改回 0（见 DFX/Modules/M_SpriteAtlasSize.dfm）。
+// 这个 CVar 保留作逃生开关：万一某个工程/相机的轴向确实不同，可以在编辑器控制台里临时叠加
+// 一个 Yaw 做对比。默认 0 = 不叠加。
 static TAutoConsoleVariable<float> CVarAtlasFXPreviewYaw(
 	TEXT("AtlasFX.PaperZD.PreviewYaw"),
-	90.0f,
-	TEXT("预览生成特效时额外叠加的 Yaw（度，默认 90）：让按游戏相机摆放的网格面片在预览里正对镜头。0 = 不叠加。"),
+	0.0f,
+	TEXT("预览生成特效时额外叠加的 Yaw（度，默认 0 = 不叠加）。预览相机与游戏相机同轴，正常不用改。"),
 	ECVF_Default);
 
 // 游戏里特效挂在角色的根组件上（脚底），而预览里这个渲染组件的原点在精灵中心（实测在胸口）。
@@ -275,7 +277,8 @@ namespace
 		{
 			Spawned->SetRelativeScale3D(Scale);
 
-			// 见文件头 CVarAtlasFXPreviewYaw 的说明：把游戏相机的屏幕平面转成预览相机的屏幕平面。
+			// 见文件头 CVarAtlasFXPreviewYaw：默认 0（预览与游戏同轴，不需要补偿），
+			// 只在有人手动改了这个 CVar 时才叠加，方便对比不同轴向的工程。
 			const float PreviewYaw = CVarAtlasFXPreviewYaw.GetValueOnGameThread();
 			if (!FMath::IsNearlyZero(PreviewYaw))
 			{
