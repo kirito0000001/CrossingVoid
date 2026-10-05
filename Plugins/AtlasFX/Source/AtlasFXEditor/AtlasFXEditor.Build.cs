@@ -27,6 +27,7 @@ public class AtlasFXEditor : ModuleRules
 			"DataHierarchyEditor",   // UHierarchyRoot / UHierarchySection / FDataHierarchyElementMetaData_SectionAssociation
 			"UserAssetTagsEditor",   // UTaggedAssetBrowserConfiguration + UE::UserAssetTags
 			"Niagara",               // UNiagaraSystem
+			"AtlasFX",               // UNiagaraDataInterfaceSpriteAtlas（属性绑定要按类型找它）
 		});
 	}
 }

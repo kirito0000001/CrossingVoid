@@ -750,9 +750,10 @@ MeshRenderer Mesh
     -run=AtlasFXSetup -stdout -FullStdOutLogOutput -unattended -nopause -nosplash
 ```
 
-它做四件事：① 重建 `/AtlasFX/TABC_Atlas2DWizard` 的层级（section + 目录过滤器 + root child + SectionAssociation）；
-② 给两个模板写 `UAT.CrossingvoidAtlas`，并清掉改名前的 `UAT.Crossingvoid2D`；③ `ScanPathsSynchronous("/AtlasFX", true)`；
-④ **重扫之后**再 `AssetUpdateTags(..., FullUpdate)`，并用和对话框一样的 AR 查询自查。
+它做五件事：① 重建 `/AtlasFX/TABC_Atlas2DWizard` 的层级（section + 目录过滤器 + root child + SectionAssociation）；
+② `SeedRendererMaterialParameters()`：给两个模板的渲染器补 `Sheet` 纹理槽 + `Sheet ← User.Atlas.ResolvedTexture` 属性绑定（见 §16）；
+③ 给两个模板写 `UAT.CrossingvoidAtlas`，并清掉改名前的 `UAT.Crossingvoid2D`；④ `ScanPathsSynchronous("/AtlasFX", true)`；
+⑤ **重扫之后**再 `AssetUpdateTags(..., FullUpdate)`，并用和对话框一样的 AR 查询自查。
 顺序很重要：`bForceRescan` 会用文件头重建 AR 条目，把先推进去的标签冲掉。
 
 踩过的编译坑：
@@ -760,3 +761,79 @@ MeshRenderer Mesh
 - `UE::UserAssetTags::GetUATPrefixedTag` / `RemoveUserAssetTag` **没导出** ⇒ LNK2019；
   自己用头里的 inline 常量拼：`FString::Printf(TEXT("%s%s"), *UE::UserAssetTags::UAT_METADATA_PREFIX, *Tag)`；
   删标签直接用 `Package->GetMetaData().RootMetaDataMap.Remove(...)`。
+- `AtlasFXEditor` 要用 DI 的类 ⇒ `AtlasFXEditor.Build.cs` 的私有依赖里加 `"AtlasFX"`（不加就 C1083 找不到头）。
+
+## 16. 零手工：贴图自动来自 DI（2026-10-05）
+
+### 16.1 为什么做
+
+用户反馈（原话）："设置的地方也藏的挺深的，操作步骤和创建材质实例差不多一样多了" ——
+在渲染器里填贴图要走「材质参数 → 纹理参数 → 索引[0] → 材质参数名 `Sheet` + 纹理」，四层深；
+而真正想要的是：**建完系统只要选一个 Flipbook，别的都不用管**。
+
+### 16.2 机制（引擎自带的能力，不是我们发明的）
+
+渲染器的 `FNiagaraRendererMaterialParameters`（`NiagaraRendererProperties.h:252-287`）里有一组
+`AttributeBindings`（`TArray<FNiagaraMaterialAttributeBinding>`，`NiagaraCommon.h:1450-1471`），
+每项 = `MaterialParameterName` + `NiagaraVariable`（基变量）+ `NiagaraChildVariable`（DI 的子变量）+ `ResolvedNiagaraVariable`。
+运行时链路（全部有出处）：
+
+1. `NiagaraRenderer.cpp:509-579` 每帧遍历 `AttributeBindings`；
+2. `:561` 判定 `基变量.GetType().IsDataInterface() && 子变量.GetType() == FNiagaraTypeDefinition::GetUTextureDef()`；
+3. `:565` 取值 `FNiagaraEmitterInstance::GetBoundRendererValue_GT(...)`（`NiagaraEmitterInstance.cpp:110-144`）：
+   `:112` 基变量是 DI → `:121` `UObj->CanExposeVariables()` → `:124` `UObj->GetExposedVariableValue(子变量, ...)`；
+4. `:569` `MatDyn->SetTextureParameterValue(材质参数名, 贴图)`；
+   `:567` 要求 `Tex->GetResource()` 非空（贴图还没上传时走 `:573-577` 用母材质的默认值兜底）；
+5. 顺序：属性绑定在 `:509-579` 先跑，`TextureParameters` 在 `:591-597` 后跑 ⇒ **纹理槽填了就以槽为准**，
+   留空（`None`）就跳过 ⇒ 属性绑定的贴图生效。两条并存：默认零手工，想换贴图再填槽。
+
+### 16.3 落地
+
+- DI（`NiagaraDataInterfaceSpriteAtlas.h/.cpp`）新增只读属性 `ResolvedTexture`（`TObjectPtr<UTexture2D>`，
+  分类「图集|烘好的表」），烘表时赋值：Flipbook 分支取 `Sprite->GetSourceTexture()`（失败退 `AtlasTexture`），
+  兜底分支取 `AtlasTexture`；并且 **`CopyToInternal` 也要复制它** —— 渲染器取值是从**实例 DI** 上取的
+  （`NiagaraEmitterInstance.cpp:114 RendererBindings.GetDataInterface`），不复制运行时就是空的。
+- DI 覆盖三个虚函数：`CanExposeVariables() → true`、`GetExposedVariables()`（塞进
+  `FNiagaraVariableBase(FNiagaraTypeDefinition(UTexture::StaticClass()), TEXT("ResolvedTexture"))`）、
+  `GetExposedVariableValue()`（把 `ResolvedTexture` 写进 `OutData`）。
+  **类型必须是 `UTexture`**（`NiagaraModule.cpp:1073 UTextureDef = FNiagaraTypeDefinition(UTextureClass)`，
+  和 `:561` 的判定同一个定义）；子变量名就是属性名，写法和引擎的
+  `UNiagaraDataInterfaceRenderTarget2D::ExposedRTVar`（`NiagaraDataInterfaceRenderTarget2D.cpp:119`）一致。
+- 命令 `AtlasFXSetup` 把绑定写进两个模板的渲染器：基变量**按类型**在系统用户参数里找
+  （`System->GetExposedParameters().GetParameters(...)` + `Variable.GetType().GetClass() == UNiagaraDataInterfaceSpriteAtlas::StaticClass()`，
+  所以使用者把 `Atlas` 改名也不会断），子变量固定 `ResolvedTexture`。
+  不调 `CacheValues()`（它要 `UNiagaraEmitterBase*`），直接 `ResolvedNiagaraVariable = NiagaraVariable` ——
+  对 `User.*` 用户参数来说 `CacheValues` 本来就是恒等变换（`NiagaraCommon.cpp:1017-1036`）。
+- 局限：属性绑定**不参与** DreamFX 的文本链 —— `DreamFXGenerator.cpp:1511-1516` 对 `MaterialParam`
+  直接报 `DFX5093: 'MaterialParam' is reserved syntax and is not implemented in v1`。
+  所以这条只能由 C++ 命令写进资产；`.dfs` 里看不到，**改完模板不要用 `.dfs` 覆盖回去**（会丢）。
+- 对使用者：从模板建的新系统**零手工**；从旧模板建的既有系统没有这条绑定，得重建或手工加。
+
+## 17. 贴图尺寸的坑：异步编译期读到替身 32×32（2026-10-05）
+
+现象：用户把图集资产搬到新目录后，预览变成「一坨细碎条纹」（大片细密的白色/淡蓝色条纹）。
+
+定位（反编译存盘的系统）：DI 里 `TextureSize = {x:32, y:32}`，其余全对（6 帧、画布 928×640、fps 15）。
+材质拿 `Sizes.xy` 做 UV 归一化 ⇒ `UV = (AtlasRect.xy + Local*AtlasRect.zw) / (32,32)`，最大到 (9.4, 11.3)
+⇒ **图集在帧的画布区域内平铺约 9×11 遍**，就是那坨条纹。
+
+根因（引擎实证）：`UTexture2D::GetSizeX()`（`Texture2D.cpp:349-363`）在 `IsDefaultTexture()` 为真时返回
+`GetDefaultTexture2D(this)->GetSizeX()`，而 `GetDefaultTexture2D`（`Texture2D.cpp:230-239`）的注释是
+**"Get the optimal placeholder to use during texture compilation"**，`UTexture::IsDefaultTexture()`
+（`Texture.cpp:511-516`）的注释是 **""IsDefaultTexture" actually means that a temporary default stand-in is being
+used because the texture is being async built"**。搬资产让 DDC 失效 ⇒ 贴图平台数据在后台编译 ⇒
+这期间 `GetSizeX()` 返回**替身贴图的 32**。DI 恰好在这段时间烘了表，就把 32×32 存进了资产。
+
+修复（三层）：
+1. 读尺寸前 `Texture->BlockOnAnyAsyncBuild()`（`Texture.cpp:518-529`，引擎自己的写法：`FinishCachePlatformData()` +
+   `FTextureCompilingManager::Get().FinishCompilation({this})`；声明在 `Texture.h:2050`）。
+2. `ClampTextureSizeToRects()`：贴图尺寸如果比「帧矩形的最大边界」还小就一定是错的（不依赖贴图、纯由帧表推出），
+   改用帧矩形范围并打 Warning。对这张图集给出 595×485（真值 597×487，误差 0.3%）。
+3. 材质 UV 加 `saturate`：正常情况是恒等变换，出问题时最坏采错一块而不是花屏。
+4. `BakeVersion` 2 → 3 ⇒ 所有旧资产的签名立刻过期 ⇒ **加载时自动重烘**，用户不用点任何按钮。
+
+验证：无头加载该系统，日志 `LogAtlasFX: ... 加载时自动重烘帧表 —— 6 帧 / 15.00 fps / 画布 928x640 / 贴图 597x487`。
+
+顺带记两条：`UPaperSprite::GetSourceTexture()`（`PaperSprite.cpp:1442-1470`，整段在 `#if WITH_EDITOR`）
+只认 `SourceTexture` 这个软引用、**不退回** `BakedSourceTexture`，而后者是 `protected`（`PaperSprite.h:103-104`）
+⇒ 插件读不到（硬写会 `C2248`）。所以取贴图链是 `GetSourceTexture()` → DI 自己的 `AtlasTexture`。

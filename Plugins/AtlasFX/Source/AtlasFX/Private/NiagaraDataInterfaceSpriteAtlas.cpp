@@ -120,7 +120,14 @@ void UNiagaraDataInterfaceSpriteAtlas::RefreshFromSource()
 
 				if (!Texture)
 				{
+					// SourceTexture 是编辑器软引用，PaperSprite.cpp:1442-1470 只认它；
+					// 取不到就退到 DI 自己的兜底贴图（Sprite 的 BakedSourceTexture 是 protected，
+					// 插件访问不到）。烘表整段都在 WITH_EDITOR 里，所以这条链够用。
 					Texture = Sprite->GetSourceTexture();
+					if (!Texture)
+					{
+						Texture = AtlasTexture;
+					}
 				}
 			}
 
@@ -130,6 +137,12 @@ void UNiagaraDataInterfaceSpriteAtlas::RefreshFromSource()
 
 		if (Texture)
 		{
+			// 贴图的平台数据可能还在异步编译：这期间 GetSizeX() 返回的是「临时替身」的尺寸
+			// （引擎默认贴图 32×32 —— Texture2D.cpp:344-363 + Texture.cpp:511-516），
+			// 拿它做 UV 归一化会让图集在面片里平铺几百遍（症状：一坨细碎条纹）。
+			// 引擎自己的写法就是先阻塞到编译完成：Texture.cpp:518-529 BlockOnAnyAsyncBuild()。
+			Texture->BlockOnAnyAsyncBuild();
+
 			TextureSize = FIntPoint(Texture->GetSizeX(), Texture->GetSizeY());
 			if (TextureSize.X <= 0 || TextureSize.Y <= 0)
 			{
@@ -150,6 +163,12 @@ void UNiagaraDataInterfaceSpriteAtlas::RefreshFromSource()
 			// Flipbook 里一帧都没拿到贴图：沿用上次的值，别把材质搞成 NaN。
 			TextureSize = PreviousTextureSize;
 		}
+
+		// 暴露给渲染器「材质参数 → 属性绑定」用（子变量名 ResolvedTexture）。
+		ResolvedTexture = Texture;
+
+		ClampTextureSizeToRects(Texture);
+
 		CanvasSize = ResolvedCanvasSize;
 		return;
 	}
@@ -165,8 +184,42 @@ void UNiagaraDataInterfaceSpriteAtlas::RefreshFromSource()
 
 	if (AtlasTexture)
 	{
+		AtlasTexture->BlockOnAnyAsyncBuild();
 		TextureSize = FIntPoint(AtlasTexture->GetSizeX(), AtlasTexture->GetSizeY());
 	}
+
+	ResolvedTexture = AtlasTexture;
+
+	ClampTextureSizeToRects(AtlasTexture);
+}
+
+void UNiagaraDataInterfaceSpriteAtlas::ClampTextureSizeToRects(UTexture2D* InTexture)
+{
+	// 帧矩形的最大边界 = 图集「至少得多大」的下界。它完全由帧表推出来，不依赖贴图能不能加载，
+	// 所以可以当最后一道保险：材质用 Sizes.xy 做 UV 归一化，尺寸只要比矩形范围还小，
+	// UV 就会 >1 ⇒ 图集在面片里平铺（症状就是一坨细碎条纹）。
+	FIntPoint Extent(0, 0);
+	for (const FVector4& Rect : FrameRects)
+	{
+		Extent.X = FMath::Max(Extent.X, FMath::CeilToInt(Rect.X + Rect.Z));
+		Extent.Y = FMath::Max(Extent.Y, FMath::CeilToInt(Rect.Y + Rect.W));
+	}
+
+	if (Extent.X <= 0 || Extent.Y <= 0)
+	{
+		return;
+	}
+
+	if (TextureSize.X >= Extent.X && TextureSize.Y >= Extent.Y)
+	{
+		return;
+	}
+
+	UE_LOG(LogAtlasFX, Warning,
+		TEXT("%s：贴图尺寸 %dx%d 比帧矩形范围 %dx%d 还小（贴图 %s），改用帧矩形范围做 UV 归一化。"),
+		*GetName(), TextureSize.X, TextureSize.Y, Extent.X, Extent.Y,
+		InTexture ? *InTexture->GetPathName() : TEXT("<取不到贴图>"));
+	TextureSize = Extent;
 }
 
 #if WITH_EDITOR
@@ -220,7 +273,8 @@ FString UNiagaraDataInterfaceSpriteAtlas::ComputeSourceSignature() const
 #if WITH_EDITOR
 	// 烘表算法版本：改了烘表逻辑就 +1，强制所有资产在下次加载时重烘一次。
 	// （v2 = 贴图尺寸在无 RHI 进程里退回导入尺寸，避免写出 0x0。）
-	const int32 BakeVersion = 2;
+	// （v3 = 读贴图尺寸前先 BlockOnAnyAsyncBuild，并加「尺寸不得小于帧矩形范围」的保险。）
+	const int32 BakeVersion = 3;
 
 	FString Signature = FString::Printf(TEXT("v%d|fb:%s|%d|%.4f"),
 		BakeVersion, *Flipbook->GetPathName(), Flipbook->GetNumKeyFrames(), Flipbook->GetFramesPerSecond());
@@ -312,6 +366,35 @@ bool UNiagaraDataInterfaceSpriteAtlas::Equals(const UNiagaraDataInterface* Other
 		&& OtherTyped->RectInsetPixels == RectInsetPixels;
 }
 
+namespace
+{
+	/** 暴露给渲染器的子变量。名字就是成员名 —— 引擎里 UNiagaraDataInterfaceRenderTarget2D::ExposedRTVar
+	 *  也是这么写的（NiagaraDataInterfaceRenderTarget2D.cpp:119：
+	 *  `FNiagaraVariableBase(FNiagaraTypeDefinition(UTexture::StaticClass()), TEXT("RenderTarget"))`）。
+	 *  类型必须是 UTexture：NiagaraRenderer.cpp:561 认的就是 GetUTextureDef()。 */
+	const FNiagaraVariableBase& GetExposedTextureVariable()
+	{
+		static const FNiagaraVariableBase Variable(FNiagaraTypeDefinition(UTexture::StaticClass()), TEXT("ResolvedTexture"));
+		return Variable;
+	}
+}
+
+void UNiagaraDataInterfaceSpriteAtlas::GetExposedVariables(TArray<FNiagaraVariableBase>& OutVariables) const
+{
+	OutVariables.Emplace(GetExposedTextureVariable());
+}
+
+bool UNiagaraDataInterfaceSpriteAtlas::GetExposedVariableValue(const FNiagaraVariableBase& InVariable, void* InPerInstanceData, FNiagaraSystemInstance* InSystemInstance, void* OutData) const
+{
+	if (InVariable == GetExposedTextureVariable())
+	{
+		UObject** Var = (UObject**)OutData;
+		*Var = ResolvedTexture;
+		return true;
+	}
+	return false;
+}
+
 bool UNiagaraDataInterfaceSpriteAtlas::CopyToInternal(UNiagaraDataInterface* Destination) const
 {
 	if (!Super::CopyToInternal(Destination))
@@ -336,6 +419,9 @@ bool UNiagaraDataInterfaceSpriteAtlas::CopyToInternal(UNiagaraDataInterface* Des
 	DestinationTyped->CanvasSize = CanvasSize;
 	DestinationTyped->TextureSize = TextureSize;
 	DestinationTyped->Fps = Fps;
+	// 渲染器的「材质参数 → 属性绑定」是从**实例 DI** 上取值（NiagaraEmitterInstance.cpp:114
+	// RendererBindings.GetDataInterface），所以这份也得复制过去，否则运行时拿不到贴图。
+	DestinationTyped->ResolvedTexture = ResolvedTexture;
 
 	return true;
 }

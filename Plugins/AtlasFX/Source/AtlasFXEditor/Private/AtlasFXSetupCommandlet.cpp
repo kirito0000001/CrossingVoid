@@ -23,7 +23,9 @@
 #include "Assets/TaggedAssetBrowserConfiguration.h"
 #include "DataHierarchyCommonTypes.h"
 #include "DataHierarchyViewModelBase.h"
+#include "Engine/Texture.h"
 #include "Misc/PackageName.h"
+#include "NiagaraDataInterfaceSpriteAtlas.h"
 #include "NiagaraMeshRendererProperties.h"
 #include "NiagaraRendererProperties.h"
 #include "NiagaraSpriteRendererProperties.h"
@@ -341,6 +343,23 @@ bool UAtlasFXSetupCommandlet::SeedRendererMaterialParameters()
 
 	bool bOk = true;
 
+	// 找系统用户参数里第一个 AtlasFX 的 DI —— 按**类型**找而不是按名字，因为使用者可能把 Atlas 改名。
+	auto FindAtlasDataInterfaceParameter = [](const UNiagaraSystem* InSystem) -> FName
+	{
+		TArray<FNiagaraVariable> UserParameters;
+		InSystem->GetExposedParameters().GetParameters(UserParameters);
+
+		for (const FNiagaraVariable& Variable : UserParameters)
+		{
+			if (Variable.GetType().GetClass() == UNiagaraDataInterfaceSpriteAtlas::StaticClass())
+			{
+				return Variable.GetName();
+			}
+		}
+
+		return NAME_None;
+	};
+
 	for (const TCHAR* TemplatePackage : TemplatePackages)
 	{
 		const FString ObjectPath = ToObjectPath(TemplatePackage);
@@ -355,6 +374,14 @@ bool UAtlasFXSetupCommandlet::SeedRendererMaterialParameters()
 
 		UPackage* Package = System->GetPackage();
 		int32 SeededCount = 0;
+
+		const FName DiParameterName = FindAtlasDataInterfaceParameter(System);
+		if (DiParameterName.IsNone())
+		{
+			UE_LOG(LogAtlasFXSetup, Warning,
+				TEXT("%s：没找到 AtlasFX 的 DI 用户参数，渲染器的「材质参数 → 属性绑定」这条会跳过（纹理槽照补）。"),
+				*ObjectPath);
+		}
 
 		// 用对象迭代器按包过滤找渲染器，绕开 FVersionedNiagaraEmitterData 那套版本化句柄 API
 		// （5.7 起在改名：UE_DEPRECATED 提示改用 FVersionedNiagaraEmitterBase）。
@@ -384,22 +411,56 @@ bool UAtlasFXSetupCommandlet::SeedRendererMaterialParameters()
 				continue;
 			}
 
-			const bool bAlreadySeeded = Parameters->TextureParameters.ContainsByPredicate(
+			const bool bHasTextureSlot = Parameters->TextureParameters.ContainsByPredicate(
 				[](const FNiagaraRendererMaterialTextureParameter& Entry)
 				{
 					return Entry.MaterialParameterName == SheetMaterialParameterName;
 				});
 
-			if (bAlreadySeeded)
+			// 属性绑定：Sheet ← DI 的 ResolvedTexture 子变量。
+			// 这条链是引擎自带的能力（不是我们发明的）：
+			//   NiagaraRenderer.cpp:509-577 每帧遍历 MaterialParameters.AttributeBindings，
+			//   遇到「基变量是 DI + 子变量类型是 UTexture」就 MatDyn->SetTextureParameterValue；
+			//   取值的实现是 FNiagaraEmitterInstance::GetBoundRendererValue_GT
+			//   （NiagaraEmitterInstance.cpp:110-144）→ DI 的 GetExposedVariableValue。
+			// 于是使用者只要选 Flipbook，材质自动拿到图集 —— 不用建材质实例、不用填纹理槽。
+			const bool bHasBinding = Parameters->AttributeBindings.ContainsByPredicate(
+				[](const FNiagaraMaterialAttributeBinding& Binding)
+				{
+					return Binding.MaterialParameterName == SheetMaterialParameterName;
+				});
+
+			if (bHasTextureSlot && bHasBinding)
 			{
 				continue;
 			}
 
 			Renderer->Modify();
-			FNiagaraRendererMaterialTextureParameter& Entry = Parameters->TextureParameters.AddDefaulted_GetRef();
-			Entry.MaterialParameterName = SheetMaterialParameterName;
-			Entry.Texture = nullptr;   // 故意留空：用哪个图集由使用者在渲染器上选
-			++SeededCount;
+			int32 SeededForRenderer = 0;
+
+			if (!bHasTextureSlot)
+			{
+				FNiagaraRendererMaterialTextureParameter& Entry = Parameters->TextureParameters.AddDefaulted_GetRef();
+				Entry.MaterialParameterName = SheetMaterialParameterName;
+				Entry.Texture = nullptr;   // 故意留空：默认走下面的属性绑定；想换贴图再在这里填
+				++SeededForRenderer;
+			}
+
+			if (!bHasBinding && !DiParameterName.IsNone())
+			{
+				FNiagaraMaterialAttributeBinding& Binding = Parameters->AttributeBindings.AddDefaulted_GetRef();
+				Binding.MaterialParameterName = SheetMaterialParameterName;
+				Binding.NiagaraVariable = FNiagaraVariableBase(FNiagaraTypeDefinition(UNiagaraDataInterfaceSpriteAtlas::StaticClass()), DiParameterName);
+				// 用户参数没有 emitter 别名要解析（CacheValues 对 User.* 也是恒等变换），
+				// 这里直接把解析结果写成同一个变量；不调 CacheValues 是因为它要 UNiagaraEmitterBase*。
+				Binding.ResolvedNiagaraVariable = Binding.NiagaraVariable;
+				// 子变量名必须和 DI 的 GetExposedVariables 里给的一致（"ResolvedTexture"），
+				// 类型必须是 UTexture —— NiagaraRenderer.cpp:561 认的就是 GetUTextureDef()。
+				Binding.NiagaraChildVariable = FNiagaraVariableBase(FNiagaraTypeDefinition(UTexture::StaticClass()), TEXT("ResolvedTexture"));
+				++SeededForRenderer;
+			}
+
+			SeededCount += SeededForRenderer;
 		}
 
 		if (SeededCount > 0 && SaveAssetPackage(Package, System, TemplatePackage) == false)
@@ -409,8 +470,8 @@ bool UAtlasFXSetupCommandlet::SeedRendererMaterialParameters()
 		}
 
 		UE_LOG(LogAtlasFXSetup, Display,
-			TEXT("渲染器材质参数：%s 补了 %d 个 Sheet 纹理槽（已经有就跳过；填了贴图就不用建材质实例）"),
-			*ObjectPath, SeededCount);
+			TEXT("渲染器材质参数：%s 补了 %d 项（Sheet 纹理槽 + Sheet ← %s.ResolvedTexture 属性绑定；已有的跳过）"),
+			*ObjectPath, SeededCount, DiParameterName.IsNone() ? TEXT("<无 DI>") : *DiParameterName.ToString());
 	}
 
 	return bOk;

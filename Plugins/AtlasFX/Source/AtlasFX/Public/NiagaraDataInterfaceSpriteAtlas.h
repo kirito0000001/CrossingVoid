@@ -81,6 +81,12 @@ public:
 	UPROPERTY(VisibleAnywhere, Category = "图集|烘好的表", meta = (DisplayName = "贴图尺寸"))
 	FIntPoint TextureSize = FIntPoint(1, 1);
 
+	/** 烘表时解析出来的图集贴图（Flipbook 第一帧 Sprite 的源贴图，或兜底贴图）。
+	 *  它同时通过 GetExposedVariables 暴露给渲染器的「材质参数 → 属性绑定」（子变量名 ResolvedTexture），
+	 *  于是材质不用再手工填 Sheet —— 建系统只要选 Flipbook 就够了。 */
+	UPROPERTY(VisibleAnywhere, Category = "图集|烘好的表", meta = (DisplayName = "解析到的贴图", ToolTip = "烘表时解析出来的图集贴图。渲染器「材质参数 → 属性绑定」里可以绑到它（显示为 Atlas | ResolvedTexture），这样材质自动拿到图集，不用手工填 Sheet。"))
+	TObjectPtr<UTexture2D> ResolvedTexture;
+
 	/** 帧率（来自 Flipbook。工具在 pack 模式不写 Fps，所以这是唯一的来源）。 */
 	UPROPERTY(VisibleAnywhere, Category = "图集|烘好的表", meta = (DisplayName = "帧率"))
 	float Fps = 12.0f;
@@ -109,6 +115,15 @@ public:
 	virtual void GetVMExternalFunction(const FVMExternalFunctionBindingInfo& BindingInfo, void* InstanceData, FVMExternalFunction& OutFunc) override;
 	virtual bool CanExecuteOnTarget(ENiagaraSimTarget Target) const override;
 	virtual bool Equals(const UNiagaraDataInterface* Other) const override;
+
+	/** 把 ResolvedTexture 暴露给渲染器的「材质参数 → 属性绑定」。
+	 *  调用链（引擎实证）：NiagaraRenderer.cpp:509-577 遍历 MaterialParameters.AttributeBindings →
+	 *  FNiagaraEmitterInstance::GetBoundRendererValue_GT（NiagaraEmitterInstance.cpp:110-144）
+	 *  在 CanExposeVariables() 为真时调 GetExposedVariableValue → MatDyn->SetTextureParameterValue。
+	 *  子变量名 "ResolvedTexture"（与 UNiagaraDataInterfaceRenderTarget2D::ExposedRTVar 同写法）。 */
+	virtual bool CanExposeVariables() const override { return true; }
+	virtual void GetExposedVariables(TArray<FNiagaraVariableBase>& OutVariables) const override;
+	virtual bool GetExposedVariableValue(const FNiagaraVariableBase& InVariable, void* InPerInstanceData, FNiagaraSystemInstance* InSystemInstance, void* OutData) const override;
 
 	/** 复制自有数据。
 	 *  每个 NiagaraComponent 都会给自己造一份 DI 实例 —— NiagaraComponent.cpp:3949-3950 用的是
@@ -147,6 +162,11 @@ protected:
 	/** 帧表是否过期（源变了 / 从没烘过）。非编辑器构建恒 false —— 运行时绝不重烘，
 	 *  否则会读到编辑器专用字段而把表清空。 */
 	bool NeedsRebakeFromSource() const;
+
+	/** 最后一道保险：贴图尺寸如果比「帧矩形的最大边界」还小，就一定是错的（异步编译中的替身、
+	 *  取不到贴图、软引用失效……）。这时改用帧矩形范围 —— 它由帧表本身推出，不依赖贴图。
+	 *  不这么做的话材质拿 Sizes.xy 做 UV 归一化，UV 会 >1 ⇒ 图集在面片里平铺。 */
+	void ClampTextureSizeToRects(UTexture2D* InTexture);
 
 private:
 	static const FName GetFrameCountName;

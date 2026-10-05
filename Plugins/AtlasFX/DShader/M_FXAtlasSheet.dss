@@ -61,8 +61,12 @@ export void M_FXAtlasSheet(inout material m)
     float2 InFrame = step(0.0, Local) * step(Local, 1.0);
     float Mask = InFrame.x * InFrame.y;
 
-    // 帧内 0..1 → 图集里的实际 UV
-    float2 UV = (AtlasRect.xy + Local * AtlasRect.zw) / Sizes.xy;
+    // 帧内 0..1 → 图集里的实际 UV。
+    // saturate 是保险丝：Sizes.xy 一旦被上游写坏（实测：贴图平台数据还在异步编译时
+    // GetSizeX() 返回引擎替身尺寸 32×32），UV 会远大于 1 ⇒ 图集在面片里平铺成
+    // 「一坨细碎条纹」。夹到 [0,1] 后最坏只是采错一块，不会花屏；正常情况
+    // （所有矩形都在贴图内）它是恒等变换。
+    float2 UV = saturate((AtlasRect.xy + Local * AtlasRect.zw) / Sizes.xy);
     float4 CMain = Sheet.Sample(UV) * Mask;
 
     // ── 兜底路径：三个动态参数全是 0 ────────────────────────────────────
