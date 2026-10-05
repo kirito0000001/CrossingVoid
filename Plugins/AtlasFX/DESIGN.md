@@ -165,7 +165,7 @@ UV = (整数格 + 格内UV) × (1/列数, 1/行数)
   | `MinSize`（Vector2） | `(92.8, 64.0)` | **尺寸下限**。`Particles.SpriteSize` 为 0 时宽度会算成 0 ⇒ 面片静默消失（不报任何错）。这个下限保证面片永远可见，同时是排查判据：面片以下限尺寸出现 = 上游 `SpriteSize` 是 0 |
   | `DepthScale` | `1.0` | 厚度方向缩放（网格局部 Y）。真平面保持 1.0；拿 Cube 当薄片时调小（0.05 = 5 厘米厚） |
   | `UniformScale` | `1.0` | 宽高整体倍率，不影响厚度 |
-  | `MeshYaw` | `-90.0` | 绕 Z 的朝向修正（度）。**必须和渲染器的 `FacingMode` 配对**，见 §14 |
+  | `MeshYaw` | `0.0` | 绕 Z 的朝向修正（度）。**必须和渲染器的 `FacingMode` 配对**，见 §14。默认 0 = 保持面片自然朝向（法线 Y，正对相机）；要左右镜像改 `180` |
 
 - 函数体（三行，无分支）：
   ```
@@ -326,9 +326,10 @@ UV = (整数格 + 格内UV) × (1/列数, 1/行数)
    NiagaraComponent 建 DI 实例时用的是 `NewObject` + `CopyTo`（**不是** `DuplicateObject`），
    而 `UNiagaraDataInterface::CopyTo` 只搬 `CopyToInternal` 里显式拷贝的字段 ——
    不覆写的话运行时实例拿到的是**空帧表**（编辑器面板却显示正常，因为面板看的是资产上的实例）。
-10. **网格渲染器：`FacingMode` 与模块的 `MeshYaw` 必须配对**（2026-10-04 实测，静默失效级）：
-    `CameraPlane` 配 `MeshYaw = -90` 会让面片侧对镜头 ⇒ **完全看不见且引擎不报任何错**。
-    本工程用「不写 `FacingMode`（默认 `Default`）+ `MeshYaw = -90`」。配对表与引擎依据见 §14.3。
+10. **网格渲染器：`FacingMode` 与模块的 `MeshYaw` 必须配对**（2026-10-04 / 10-05 两轮实测，静默失效级）：
+    面片本来正对镜头（法线 Y），任何**多转的 `MeshYaw`**（例如 `-90`）都会让它侧对镜头 ⇒
+    **完全看不见、或只剩一条缝，且引擎不报任何错**。本工程用「不写 `FacingMode`（默认 `Default`）
+    + `MeshYaw = 0`」。配对表与引擎依据见 §14.3。
 11. **网格渲染器挂材质要两个属性一起给**：`OverrideMaterials` 数组**加上**
     `bOverrideMaterials = true`（构造函数默认 `false`，只给数组会被静默忽略 ⇒ 显示灰白 `WorldGridMaterial`）；
     写 `Material = "..."` 会被 DreamFX 静默丢掉。见 §14.2。
@@ -609,10 +610,10 @@ MeshRenderer Mesh
 
 | 渲染器 `FacingMode` | 模块 `MeshYaw` | 结果 |
 |---|---|---|
-| **不写**（= 默认 `Default`） | **`-90.0`** | ✅ **本工程用这套**：网格保持局部朝向、可以被特效旋转，面法线由 `MeshYaw` 摆到相机方向 |
+| **不写**（= 默认 `Default`） | **`0.0`** | ✅ **本工程用这套**：网格保持局部朝向、可以被特效旋转，而面片本来就正对相机（法线 Y） |
 | `CameraPlane` | `0.0` | ✅ 也能看见：朝向矩阵每帧把面片摆正对相机，但**特效永远转不动它** |
 | `CameraPlane` | `-90.0` | ❌ 朝向矩阵已经摆正了，多出来的 -90 又转 90° ⇒ 侧对镜头 ⇒ **完全看不见**，且引擎不报任何错 |
-| 不写（`Default`） | `0.0` | ❌ 面片保持局部朝向（法线 Y）⇒ 对沿 X 轴看的相机是侧对 ⇒ 看不见 |
+| 不写（`Default`） | `-90.0` | ❌ 面片被多转 90°（法线从 Y 到 X）⇒ 侧对镜头 ⇒ 看不见（**2026-10-05 的真凶**） |
 
 引擎依据（`D:\UnrealEngine-5.8.2\Engine\Plugins\FX\Niagara\Shaders\Private\NiagaraMeshParticleUtils.ush`）：
 
@@ -630,12 +631,16 @@ MeshRenderer Mesh
 
 - `/ZDBridge/FX/FXDefault`（源文件 `Plugins/ZDBridge/Content/FX/FXDefault.fbx`）：
   **面法线在局部 Y 轴上**、宽沿局部 X（92.8）、高沿局部 Z（64.0）、**轴心在底边**（局部 Z = 0）。
-- 本工程 2D 相机**沿 X 轴看**。旁证：`/Game/GameActor2D/SAO_Kirito/ExAsset/Leng刀光` 里
-  `AddVelocity` 的速度是 `(0, -500, 0)` —— 特效沿 Y 飞，说明屏幕水平方向是 Y、相机沿 X。
-- ⇒ 面法线要从 Y 转到 X ⇒ **`MeshYaw = -90.0`**。
-  默认值写在模块里（`M_SpriteAtlasSize.dfm`），系统侧也**显式传** `MeshYaw = -90.0`；
+- 本工程 2D 相机**沿 Y 轴看**（X 左右 / Z 上下 / Y 景深，与 Paper2D 侧视约定一致）。
+  **2026-10-05 定案**：地图视口、游戏相机、PaperZD 序列预览视口**三者同轴** —— 用户实测
+  `AtlasFX.PaperZD.PreviewYaw 0` 时预览与游戏完全一致。
+  早先「相机沿 X 轴看」是从 `Leng刀光` 的 `AddVelocity(0, -500, 0)`（特效沿 Y 飞）**推错**的：
+  那只说明"屏幕水平方向是 Y"；而 `Leng刀光` 用网格渲染器且**不写** `Particles.MeshOrientation`
+  （保持自然朝向）正好印证相机是沿 Y 看的。
+- ⇒ 面法线本来就是 Y ⇒ **`MeshYaw = 0.0`**（保持自然朝向）。
+  默认值写在模块里（`M_SpriteAtlasSize.dfm`），系统侧也**显式传** `MeshYaw = 0.0`；
   **不要透传 `User.MeshYaw`** —— 重编不会重置用户参数的存量值，旧值会把面片转歪。
-- 换成作者化朝向正确的工程面片（法线 X、宽 Y、高 Z）时改回 `0.0`；画面左右镜像就把符号翻过来（`+90`）。
+- 画面左右镜像就把符号翻成 `180`；只有面法线本来在局部 X 上的面片才需要 `-90`。
 
 ### 14.4 `LocalSpace = true` 的用途
 
@@ -673,7 +678,7 @@ MeshRenderer Mesh
 
 ### 14.6 这条线踩过的坑（收口）
 
-1. **朝向配错 = 静默消失**：最初是 `CameraPlane` + `MeshYaw = -90`，面片被转成侧对镜头 ⇒
+1. **朝向配错 = 静默消失**：最初是 `CameraPlane` + `MeshYaw = -90`，面片被转成侧对镜头（2026-10-05 又栽一次：`Default` + `MeshYaw = -90` 同样侧对）⇒
    什么都看不见，而**引擎不报任何错、日志一个字都没有**。排查时极易误判成"材质坏了 / 特效没生成"。
    配合 §14.3 的配对表逐项核对。
 2. **`Particles.Scale` 为 0 = 静默消失**（同样不报错）：源头是 `Particles.SpriteSize` 是 0。
@@ -716,7 +721,7 @@ MeshRenderer Mesh
 | 文本源 | 资产 | 渲染器 |
 |---|---|---|
 | `DFX/Templates/NS_Atlas2D_Sprite.dfs` | `/AtlasFX/Templates/NS_Atlas2D_Sprite` | Sprite 渲染器 |
-| `DFX/Templates/NS_Atlas2D_Mesh.dfs` | `/AtlasFX/Templates/NS_Atlas2D_Mesh` | Mesh 渲染器（`FXDefault` 面片 + `MeshYaw = -90`） |
+| `DFX/Templates/NS_Atlas2D_Mesh.dfs` | `/AtlasFX/Templates/NS_Atlas2D_Mesh` | Mesh 渲染器（`FXDefault` 面片 + `MeshYaw = 0`） |
 
 两个模板默认挂 Defatk 图集当示例，换图集只改 DI 的 Flipbook 路径；发射器名 `Atlas2D` / `Atlas2D_Mesh`。
 旧的 `Plugins/AtlasFX/Content/Effects/NS_AtlasDefAtk*.uasset` 已从 git 删除
@@ -911,17 +916,15 @@ PaperZD 的预览**确实会触发通知**，卡在 OwningInstance 上：
 * **位置的工程约定**：`Location = GetWorldLocation(Comp) + (Owner.Tags 含 "1P" ? Offset : -Offset)`，
   但那个加法节点的 **Z 分量直接从 `Offset` 上 Break 出来**（`Select Vector` 只接了 X/Y）⇒
   **只镜像水平面、不翻高度**。预览的渲染组件没有 Owner ⇒ 走 `-Offset` 那一支。
-* **相机的工程约定（2026-10-05 实测定位「特效生成了却看不见」）**：PaperZD 预览视口是「X 向右、Z 向上」，
-  即**预览相机沿 Y 轴看**；而**地图视口和游戏里的 2D 相机都沿 X 轴看**（证据：`Leng刀光` 用局部 Y 轴速度
-  做横向飞行；角色与特效都是朝 X 摆的）—— 所以地图里看是对的、游戏里也是对的，只有预览视口对不上。
-  网格模板里的 `MeshYaw = -90` 是按游戏相机摆的面片 ⇒ 原样丢进预览就是**侧对镜头**，只剩一条薄影，
-  肉眼等于看不见。所以预览生成后会再叠一个 `AtlasFX.PaperZD.PreviewYaw`（默认 **+90**）：
-  把特效的横向（局部 Y）转到世界 X，面片正对镜头，运动方向也和游戏一致。精灵渲染器是公告板，
-  不加也能看见，但加上运动方向才对得上，所以默认一起加；设 0 可关掉。
-  **正负号决定看到面片的哪一面**：+90 是游戏里那一面，-90 是镜像（实测 -90 是反的）。
-  这个补偿**只作用于预览**，不写进任何资产 ⇒ 游戏表现零影响。
-  自查办法：日志里 `预览生成特效：... 预览 Yaw 90.0 ...`，以及 `LogNiagara: Compiling System ... <系统名>`
-  出现就说明特效确实生成过（当时是生成了、只是侧对着镜头）。
+* **相机的工程约定（2026-10-05 定案：三个视口同轴 ⇒ 预览不需要任何补偿）**：PaperZD 预览视口是
+  「X 向右、Z 向上」，即**预览相机沿 Y 轴看**；而**地图视口和游戏里的 2D 相机也沿 Y 轴看**
+  —— 用户实测：把 `AtlasFX.PaperZD.PreviewYaw` 设成 **0** 时，预览与游戏完全一致（连"一条缝"都一样）。
+  最初「特效生成了却看不见」的真因**不在预览**：是网格模板自己写了 `MeshYaw = -90`，
+  把面片法线从 Y 转到 X ⇒ 与相机轴垂直 ⇒ **游戏里和预览里都只剩一条缝**（模板已修，见 §14.3）。
+  ⇒ 预览**不叠加任何朝向补偿**，`AtlasFX.PaperZD.PreviewYaw` 默认 **0**；
+  它保留为逃生开关（设 `90` / `-90` 可强制转，排查朝向用），正常不用动。
+  自查办法：日志里 `预览生成特效：... 预览 Yaw 0.0 ...`，以及 `LogNiagara: Compiling System ... <系统名>`
+  出现就说明特效确实生成过。
 * **轴心的工程约定**：游戏里特效挂在角色的**根组件（脚底）**上，而预览里那个渲染组件的原点在
   **精灵中心**（视口里那条红色 widget 线就在胸口）。不对齐的话同一个特效在预览里会整体高出一截
   （实测「特效跑到人头上面」）。所以预览时用**精灵包围盒的底边**当脚底：

@@ -82,9 +82,10 @@ pwsh -File Plugins/AtlasFX/Tools/New-AtlasSystem.ps1 `
    （`FXDefault` 上是灰白棋盘格 `WorldGridMaterial`）。
    ⚠️ 网格渲染器**没有 `Material` 这一栏**，别找它。
 4. **`Sub Image Size` 保持 `(1, 1)`**（同精灵版）。
-5. **朝向：`Facing Mode` 一个字都别动**（保持默认 `Default`）。填成 `Camera Plane`
-   会让面片每帧朝相机转、**特效再也转不动它**，而且和 `MeshYaw = -90` 撞车 ⇒ 面片侧对镜头、
-   **完全看不见且不报任何错**。详见 `DESIGN.md` §14.3。
+5. **朝向：`Facing Mode` 一个字都别动**（保持默认 `Default`），`Mesh Yaw` 保持 `0`。
+   填成 `Camera Plane` 会让面片每帧朝相机转、**特效再也转不动它**；而把 `Mesh Yaw` 填成
+   `-90` 之类的非零值会把面片转成侧对镜头 ⇒ **完全看不见（或只剩一条缝）且不报任何错**。
+   详见 `DESIGN.md` §14.3。
 6. 粒子更新里，在 `Play_SpriteAtlas` **之后**再加一个 `/AtlasFX/Modules/Sprite_Atlas_Size`，
    参数按下表填（它读的就是上一步播放模块写好的尺寸，顺序不能反）：
 
@@ -94,7 +95,7 @@ pwsh -File Plugins/AtlasFX/Tools/New-AtlasSystem.ps1 `
    | `Min Size` | 尺寸下限，一般填成和 `Mesh Size` 一样 `(92.8, 64.0)`。**别填 0** —— 上游尺寸为 0 时面片会静默消失 |
    | `Depth Scale` | 真平面填 `1.0`；拿 Cube 当薄片用时调小（0.05 = 5 厘米厚） |
    | `Uniform Scale` | 宽高整体倍率，`1.0` |
-   | `Mesh Yaw` | `-90`（本工程 2D 相机沿 X 轴看、`FXDefault` 面法线在 Y 上）。**必须和 `Facing Mode` 配对**：`Default` 配 `-90`、`Camera Plane` 配 `0` |
+   | `Mesh Yaw` | `0`（保持面片自然朝向：`FXDefault` 面法线在局部 Y 上，而本工程相机就是沿 Y 看的）。**必须和 `Facing Mode` 配对**：`Default` 配 `0`；要左右镜像改 `180` |
 
 7. 发射器 `Settings` 里建议开 **`Local Space = true`** —— 面片才会跟着发射器 / 角色挂点一起转
    （网格版示例系统就是这么配的）。
