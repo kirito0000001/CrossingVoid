@@ -26,6 +26,28 @@ static TAutoConsoleVariable<int32> CVarAtlasFXPreviewFX(
 	TEXT("1 = 在 PaperZD 序列编辑器预览里自动生成通知上的 Niagara 特效（默认）；0 = 关闭。"),
 	ECVF_Default);
 
+// PaperZD 的预览视口是「X 向右、Z 向上」，也就是相机沿 Y 轴看；而地图视口和工程里的 2D 相机都沿 X 轴看
+// （证据：Leng刀光 用 Y 轴速度做横向飞行，角色和特效也都是朝 X 摆的）。网格模板里的 MeshYaw = -90 是
+// 按游戏相机摆的面片，原样放进预览就是侧对镜头 —— 一片薄影，等于看不见。
+// 所以预览时给生成出来的组件再叠一个 Yaw，把「游戏的屏幕平面」转成「预览的屏幕平面」：
+// 特效的横向（局部 Y）转到世界 X，面片正对镜头，运动方向也和游戏里一致。精灵渲染器是公告板，
+// 加不加都能看见，但加上之后运动方向同样和游戏对齐，所以默认一起加。设 0 可关掉。
+// 正负号决定看到面片的哪一面：+90 看到的是游戏里那一面，-90 是镜像（实测 -90 是反的）。
+static TAutoConsoleVariable<float> CVarAtlasFXPreviewYaw(
+	TEXT("AtlasFX.PaperZD.PreviewYaw"),
+	90.0f,
+	TEXT("预览生成特效时额外叠加的 Yaw（度，默认 90）：让按游戏相机摆放的网格面片在预览里正对镜头。0 = 不叠加。"),
+	ECVF_Default);
+
+// 游戏里特效挂在角色的根组件上（脚底），而预览里这个渲染组件的原点在精灵中心（实测在胸口）。
+// 不对齐的话同一个特效在预览里会整体高出一截（用户实测「特效跑到人头上面」）。
+// 用精灵包围盒的底边当脚底，把预览的基准点压下去。
+static TAutoConsoleVariable<int32> CVarAtlasFXPreviewFootAlign(
+	TEXT("AtlasFX.PaperZD.PreviewFootAlign"),
+	1,
+	TEXT("1 = 预览生成特效时把基准点对齐到精灵包围盒底边（脚底），与游戏里挂在角色根组件上的效果一致；0 = 直接用渲染组件原点。"),
+	ECVF_Default);
+
 namespace
 {
 	/** 玩家刷新间隔（编辑器 tick 次数）。TObjectIterator 要遍历整个对象表，别每帧都来。 */
@@ -48,6 +70,10 @@ namespace
 	{
 		TWeakObjectPtr<UPaperZDAnimPlayer> Player;
 		TWeakObjectPtr<const UPaperZDAnimSequence> Sequence;
+
+		/** 用路径而不是指针判断「换序列了没有」：预览播放器可能给出瞬态副本，那样指针每帧都在变。 */
+		FString SequencePath;
+
 		float LastPlaybackTime = 0.0f;
 		TArray<FNotifyRuntimeState> NotifyStates;
 	};
@@ -184,6 +210,10 @@ namespace
 		UWorld* World = RenderComponent ? RenderComponent->GetWorld() : nullptr;
 		if (!System || !World)
 		{
+			UE_LOG(LogAtlasFXPreview, Warning, TEXT("通知 %s 到点了但生成不了：Niagara 系统 = %s，世界 = %s"),
+				*Notify->GetClass()->GetName(),
+				System ? *System->GetName() : TEXT("<空>"),
+				World ? TEXT("有") : TEXT("<空>"));
 			return;
 		}
 
@@ -209,13 +239,22 @@ namespace
 		const float Sign = bFirstPerson ? 1.0f : -1.0f;
 		const FVector SignedOffset(Offset.X * Sign, Offset.Y * Sign, Offset.Z);
 
+		// 见文件头 CVarAtlasFXPreviewFootAlign：把基准点从「精灵中心」压到「精灵底边（脚底）」，
+		// 与游戏里挂在角色根组件上的位置对齐。
+		FVector FootOffset = FVector::ZeroVector;
+		if (CVarAtlasFXPreviewFootAlign.GetValueOnGameThread() != 0)
+		{
+			const FBoxSphereBounds& Bounds = RenderComponent->Bounds;
+			FootOffset.Z = (Bounds.Origin.Z - Bounds.BoxExtent.Z) - RenderComponent->GetComponentLocation().Z;
+		}
+
 		UNiagaraComponent* Spawned = nullptr;
 		if (bNotAttach)
 		{
 			// 蓝图：Spawn System at Location（世界位置 + 偏移，Scale 直接给，池 = AutoRelease）。
 			Spawned = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
 				World, System,
-				RenderComponent->GetComponentLocation() + SignedOffset,
+				RenderComponent->GetComponentLocation() + FootOffset + SignedOffset,
 				Rotation,
 				Scale,
 				true, true, ENCPoolMethod::AutoRelease, true);
@@ -226,7 +265,7 @@ namespace
 			// 蓝图也是靠随后那句 SetRelativeScale3D 定缩放的，别把 scale 塞进 spawn。
 			Spawned = UNiagaraFunctionLibrary::SpawnSystemAttached(
 				System, RenderComponent, NAME_None,
-				Offset, Rotation,
+				FootOffset + Offset, Rotation,
 				EAttachLocation::SnapToTargetIncludingScale,
 				true, true, ENCPoolMethod::None, true);
 		}
@@ -236,10 +275,18 @@ namespace
 		{
 			Spawned->SetRelativeScale3D(Scale);
 
-			UE_LOG(LogAtlasFXPreview, Verbose,
-				TEXT("预览生成特效：%s（通知 %s，时间 %.3f 秒，%s，Scale %s）"),
+			// 见文件头 CVarAtlasFXPreviewYaw 的说明：把游戏相机的屏幕平面转成预览相机的屏幕平面。
+			const float PreviewYaw = CVarAtlasFXPreviewYaw.GetValueOnGameThread();
+			if (!FMath::IsNearlyZero(PreviewYaw))
+			{
+				Spawned->AddLocalRotation(FRotator(0.0f, PreviewYaw, 0.0f));
+			}
+
+			UE_LOG(LogAtlasFXPreview, Log,
+				TEXT("预览生成特效：%s（通知 %s，时间 %.3f 秒，%s，Scale %s，预览 Yaw %.1f，脚底对齐 %+.1f，组件 %s）"),
 				*System->GetName(), *Notify->GetClass()->GetName(), Notify->Time,
-				bNotAttach ? TEXT("世界生成") : TEXT("挂在渲染组件上"), *Scale.ToString());
+				bNotAttach ? TEXT("世界生成") : TEXT("挂在渲染组件上"), *Scale.ToString(),
+				PreviewYaw, FootOffset.Z, *Spawned->GetName());
 		}
 	}
 
@@ -298,10 +345,12 @@ namespace
 		DestroySpawnedComponents(State);
 		State.NotifyStates.Reset();
 		State.Sequence = Sequence;
+		State.SequencePath = Sequence ? Sequence->GetPathName() : FString();
 		State.LastPlaybackTime = State.Player.IsValid() ? State.Player->GetCurrentPlaybackTime() : 0.0f;
 
 		if (!Sequence)
 		{
+			UE_LOG(LogAtlasFXPreview, Log, TEXT("预览播放器当前没有序列，清空跟踪。"));
 			return;
 		}
 
@@ -322,13 +371,17 @@ namespace
 			NotifyState.Notify = Notify;
 			State.NotifyStates.Add(MoveTemp(NotifyState));
 		}
+
+		UE_LOG(LogAtlasFXPreview, Log, TEXT("跟踪预览序列 %s：%d 条通知会生成特效（序列上共 %d 条）。"),
+			*Sequence->GetName(), State.NotifyStates.Num(), Sequence->GetAnimNotifies().Num());
 	}
 
 	void UpdatePlayer(FPreviewPlayerState& State)
 	{
 		UPaperZDAnimPlayer* Player = State.Player.Get();
 		const UPaperZDAnimSequence* Sequence = Player->GetCurrentAnimSequence();
-		if (Sequence != State.Sequence.Get())
+		const FString SequencePath = Sequence ? Sequence->GetPathName() : FString();
+		if (SequencePath != State.SequencePath)
 		{
 			RebuildNotifyStates(State, Sequence);
 			return;
@@ -392,6 +445,8 @@ namespace
 
 			if (bActive && !bWasActiveLastFrame)
 			{
+				UE_LOG(LogAtlasFXPreview, Log, TEXT("通知 %s 到点（通知时间 %.3f 秒，当前播放 %.3f 秒）。"),
+					*Notify->GetClass()->GetName(), NotifyTime, Playtime);
 				SpawnForNotify(NotifyState, Notify, RenderComponent);
 			}
 		}
