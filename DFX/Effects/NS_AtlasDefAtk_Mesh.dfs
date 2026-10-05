@@ -34,10 +34,12 @@ System(Name="Effects/NS_AtlasDefAtk_Mesh", Root="Plugin.AtlasFX")
             Description="播放速率倍率，负值倒放。" ];
 
         // ---- Mesh 渲染器专属 ----
+        // 朝向（MeshYaw）**故意不做成用户参数**：本工程的答案恒为 -90，写死在下面的模块调用里。
+        // 做成用户参数只会多一个面板行，而且改它的默认值**不会**刷新资产里的存量值
+        // （重编不重置用户参数 —— 实测踩过，面板上会一直显示旧值，看着像 bug）。
+        // 换网格（比如作者化成「法线 X、宽 Y、高 Z」的工程面片）时直接改下面调用里的 -90.0 即可。
         float DepthScale = 1.0 [ Group="图集|网格"; SortPriority=40;
             Description="厚度（网格局部 Y 方向的缩放）。真正的平面网格保持 1.0；拿 Cube 当薄片用时调小，例如 0.05 = 5 厘米厚。" ];
-        float MeshYaw    = -90.0 [ Group="图集|网格"; SortPriority=45;
-            Description="面片朝向修正（绕 Z 轴，度）。本工程 2D 相机沿 X 轴看，而 FXDefault 的面法线在 Y 上，所以要 -90 把它转到 X；换成作者化好的工程面片（法线 X、宽 Y、高 Z）就改回 0。" ];
     }
 
     Emitter DefAtkMesh
