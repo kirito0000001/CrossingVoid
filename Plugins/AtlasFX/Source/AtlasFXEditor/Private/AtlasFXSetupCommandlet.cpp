@@ -26,6 +26,11 @@
 #include "AtlasFXPaperZDPreview.h"
 #include "DataHierarchyCommonTypes.h"
 #include "DataHierarchyViewModelBase.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/Texture.h"
 #include "Misc/PackageName.h"
 #include "NiagaraDataInterfaceSpriteAtlas.h"
@@ -554,6 +559,67 @@ void UAtlasFXSetupCommandlet::RefreshAssetRegistryTags()
 	}
 }
 
+namespace
+{
+	/** 把一张蓝图的所有图 / 节点 / 连线打到日志里（只用 Engine 里的 UEdGraph* 类型，不必依赖 BlueprintGraph 模块）。 */
+	void DumpBlueprintGraph(const UBlueprint* Blueprint)
+	{
+		if (Blueprint == nullptr)
+		{
+			return;
+		}
+
+		TArray<UEdGraph*> Graphs;
+		Blueprint->GetAllGraphs(Graphs);
+
+		UE_LOG(LogAtlasFXSetup, Display, TEXT("蓝图连线 dump · %s（%d 张图）"), *Blueprint->GetName(), Graphs.Num());
+
+		for (const UEdGraph* Graph : Graphs)
+		{
+			if (Graph == nullptr)
+			{
+				continue;
+			}
+
+			UE_LOG(LogAtlasFXSetup, Display, TEXT("  图 %s（%d 个节点）"), *Graph->GetName(), Graph->Nodes.Num());
+
+			for (const UEdGraphNode* Node : Graph->Nodes)
+			{
+				if (Node == nullptr)
+				{
+					continue;
+				}
+
+				UE_LOG(LogAtlasFXSetup, Display, TEXT("    节点 [%s] %s"),
+					*Node->GetClass()->GetName(),
+					*Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+
+				for (const UEdGraphPin* Pin : Node->Pins)
+				{
+					if (Pin == nullptr || Pin->LinkedTo.Num() == 0)
+					{
+						continue;
+					}
+
+					FString Links;
+					for (const UEdGraphPin* Linked : Pin->LinkedTo)
+					{
+						const UEdGraphNode* LinkedNode = Linked ? Linked->GetOwningNodeUnchecked() : nullptr;
+						Links += FString::Printf(TEXT("[%s.%s] "),
+							LinkedNode ? *LinkedNode->GetNodeTitle(ENodeTitleType::ListView).ToString() : TEXT("?"),
+							Linked ? *Linked->PinName.ToString() : TEXT("?"));
+					}
+
+					UE_LOG(LogAtlasFXSetup, Display, TEXT("      %s (%s) -> %s"),
+						*Pin->PinName.ToString(),
+						Pin->Direction == EGPD_Input ? TEXT("in") : TEXT("out"),
+						*Links);
+				}
+			}
+		}
+	}
+}
+
 void UAtlasFXSetupCommandlet::DumpPaperZDPreviewTargets()
 {
 	// ① 播放器上那个 private 的 RegisteredRenderComponent（PaperZDAnimPlayer.h:52，UPROPERTY + 无 getter）。
@@ -581,5 +647,17 @@ void UAtlasFXSetupCommandlet::DumpPaperZDPreviewTargets()
 	for (const UPaperZDAnimNotify_Base* Notify : Notifies)
 	{
 		FAtlasFXPaperZDPreview::DumpNotifyDiagnostics(Notify);
+	}
+
+	// ③ 通知蓝图的连线 dump：核对 TxSpawn 里「选择」节点到底比较 Scale 的哪两个分量
+	//    （可读代码导出把所有 Scale 取值都收敛成同一个名字「Get Scale」，看不出分量）。
+	for (const UPaperZDAnimNotify_Base* Notify : Notifies)
+	{
+		const UBlueprintGeneratedClass* GeneratedClass = Cast<UBlueprintGeneratedClass>(Notify ? Notify->GetClass() : nullptr);
+		const UBlueprint* Blueprint = GeneratedClass ? Cast<UBlueprint>(GeneratedClass->ClassGeneratedBy) : nullptr;
+		if (Blueprint != nullptr)
+		{
+			DumpBlueprintGraph(Blueprint);
+		}
 	}
 }

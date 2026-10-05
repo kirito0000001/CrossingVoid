@@ -8,6 +8,7 @@
 #include "Containers/Ticker.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/World.h"
+#include "GameFramework/Actor.h"
 #include "HAL/IConsoleManager.h"
 #include "NiagaraComponent.h"
 #include "NiagaraFunctionLibrary.h"
@@ -156,7 +157,27 @@ namespace
 		}
 	}
 
-	/** 为一条通知生成特效。语义对齐 TxSpawn 蓝图：NotAttach 勾了就世界生成，否则挂在渲染组件上。 */
+	/**
+	 * 复刻 TxSpawn 蓝图里「方便制作缩放」那个选择节点：
+	 *   Index = OR(Equal(Scale.Y, 0), Equal(Scale.Z, 0))
+	 *   真 -> MakeVector(Scale.X, Scale.X, Scale.X)；假 -> 原样用 Scale。
+	 * 所以 DefAtk 上填的 (1.0, 0.0, 0.0) 会被展开成 (1,1,1)，而不是把特效压扁。
+	 */
+	FVector ResolveScale(const UObject* Notify)
+	{
+		const FVector Raw = GetVectorProperty(Notify, TEXT("Scale"), FVector::OneVector);
+		if (Raw.Y == 0.0 || Raw.Z == 0.0)
+		{
+			return FVector(Raw.X);
+		}
+		return Raw;
+	}
+
+	/**
+	 * 为一条通知生成特效，逐条对齐 TxSpawn 蓝图：
+	 *   TXComp = 人物根组件；NotAttach 为真走世界生成，否则挂到根组件上；
+	 *   位置带「1P 标签翻转」；缩放一律靠 spawn 之后的 SetRelativeScale3D。
+	 */
 	void SpawnForNotify(FNotifyRuntimeState& NotifyState, const UPaperZDAnimNotify_Base* Notify, UPrimitiveComponent* RenderComponent)
 	{
 		UNiagaraSystem* System = GetNotifySystem(Notify);
@@ -176,41 +197,49 @@ namespace
 		const FVector Offset = GetVectorProperty(Notify, TEXT("Offset"), FVector::ZeroVector);
 		const FRotator Rotation = GetRotatorProperty(Notify, TEXT("Rotation"), FRotator::ZeroRotator);
 		const bool bNotAttach = GetBoolProperty(Notify, TEXT("NotAttach"), false);
+		const FVector Scale = ResolveScale(Notify);
 
-		// 工程里的 TxSpawn 把 Scale 当「单值缩放」用：只填 X，Y/Z 留 0
-		// （Misaka 的 DefAtk 上就是 1.0 / 0.0 / 0.0）。原样把 (1,0,0) 交给 Spawn 会把特效压成一条线，
-		// 所以 Y/Z 同时为 0 时按等比缩放处理；三个都为 0 则当作 1。
-		FVector Scale = GetVectorProperty(Notify, TEXT("Scale"), FVector::OneVector);
-		if (Scale.Y == 0.0 && Scale.Z == 0.0)
-		{
-			Scale = FVector(Scale.X > 0.0 ? Scale.X : 1.0);
-		}
+		// 蓝图里的「计算真正位置」：
+		//   Location = GetWorldLocation(Comp) + (Owner.Tags 含 "1P" ? Offset : -Offset)
+		// 但蓝图那个加法节点的 Z 分量是直接从 Offset 上 Break 出来的（SelectVector 只接了 X/Y），
+		// 也就是**只镜像水平面、不翻高度** —— 横版 2D 里这是对的，照抄。
+		// 预览的渲染组件没有 Owner（也就没有标签），走的自然是 -Offset 那一支。
+		const AActor* Owner = RenderComponent->GetOwner();
+		const bool bFirstPerson = Owner && Owner->Tags.Contains(TEXT("1P"));
+		const float Sign = bFirstPerson ? 1.0f : -1.0f;
+		const FVector SignedOffset(Offset.X * Sign, Offset.Y * Sign, Offset.Z);
 
 		UNiagaraComponent* Spawned = nullptr;
 		if (bNotAttach)
 		{
-			const FTransform Base = RenderComponent->GetComponentTransform();
+			// 蓝图：Spawn System at Location（世界位置 + 偏移，Scale 直接给，池 = AutoRelease）。
 			Spawned = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
 				World, System,
-				Base.TransformPosition(Offset),
-				Base.TransformRotation(Rotation.Quaternion()).Rotator(),
+				RenderComponent->GetComponentLocation() + SignedOffset,
+				Rotation,
 				Scale,
-				true, true, ENCPoolMethod::None, true);
+				true, true, ENCPoolMethod::AutoRelease, true);
 		}
 		else
 		{
+			// 蓝图：Spawn System Attached —— 注意这个函数**没有 Scale 参数**，
+			// 蓝图也是靠随后那句 SetRelativeScale3D 定缩放的，别把 scale 塞进 spawn。
 			Spawned = UNiagaraFunctionLibrary::SpawnSystemAttached(
 				System, RenderComponent, NAME_None,
-				Offset, Rotation, Scale,
-				EAttachLocation::KeepRelativeOffset,
-				true, ENCPoolMethod::None, true);
+				Offset, Rotation,
+				EAttachLocation::SnapToTargetIncludingScale,
+				true, true, ENCPoolMethod::None, true);
 		}
 
 		NotifyState.SpawnedComponent = Spawned;
 		if (Spawned)
 		{
-			UE_LOG(LogAtlasFXPreview, Verbose, TEXT("预览生成特效：%s（通知 %s，时间 %.3f 秒）"),
-				*System->GetName(), *Notify->GetClass()->GetName(), Notify->Time);
+			Spawned->SetRelativeScale3D(Scale);
+
+			UE_LOG(LogAtlasFXPreview, Verbose,
+				TEXT("预览生成特效：%s（通知 %s，时间 %.3f 秒，%s，Scale %s）"),
+				*System->GetName(), *Notify->GetClass()->GetName(), Notify->Time,
+				bNotAttach ? TEXT("世界生成") : TEXT("挂在渲染组件上"), *Scale.ToString());
 		}
 	}
 

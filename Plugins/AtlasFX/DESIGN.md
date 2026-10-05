@@ -902,11 +902,18 @@ PaperZD 的预览**确实会触发通知**，卡在 OwningInstance 上：
   OwningInstance ⇒ 不会和通知自身的逻辑重复生成。
 * 编辑器 ticker 与预览视口的刷新率不一定同频，极快的一次性特效在预览里可能看不出差别 —— 这是预览，不是最终效果。
 * 只认 `EWorldType::EditorPreview` ⇒ 游戏内（PIE）完全不参与，行为零影响。
-* **`Scale` 的工程约定**：`TxSpawn` 把 Scale 当单值缩放用，只填 X、Y/Z 留 0（Misaka 的 `DefAtk` 上实测
-  `Scale = 1.0 / 0.0 / 0.0`，见命令行自查日志）。原样交给 `SpawnSystemAttached` 会把特效压成一条线，
-  所以扩展在 Y/Z 同时为 0 时按等比缩放处理（三个都为 0 则当作 1）。换成别的通知时留意这条约定。
+* **`Scale` 的工程约定**（2026-10-05 用蓝图连线 dump 逐字核对）：`TxSpawn` 的 `Scale` 是「单值或整向量」两用 ——
+  `选择` 节点的 `Index = OR(Equal(Scale.Y, 0), Equal(Scale.Z, 0))`，为真取 `Option 1 = (Scale.X, Scale.X, Scale.X)`，
+  为假取 `Option 0 = Scale` 原样。Misaka 的 `DefAtk` 上实测 `Scale = 1.0 / 0.0 / 0.0` ⇒ 展开成 `(1,1,1)`。
+  **`SpawnSystemAttached` 本身没有 Scale 参数**（`NiagaraFunctionLibrary.h:96` 那个重载），
+  蓝图是先 Spawn 再 `SetRelativeScale3D`；只有 `SpawnSystemAtLocation`（`:93`）带 Scale。
+  扩展照抄这个顺序 —— 把 scale 塞进带 `FVector Scale` 的 `SpawnSystemAttached` 重载（`:98`）会把特效压扁。
+* **位置的工程约定**：`Location = GetWorldLocation(Comp) + (Owner.Tags 含 "1P" ? Offset : -Offset)`，
+  但那个加法节点的 **Z 分量直接从 `Offset` 上 Break 出来**（`Select Vector` 只接了 X/Y）⇒
+  **只镜像水平面、不翻高度**。预览的渲染组件没有 Owner ⇒ 走 `-Offset` 那一支。
 * 自查手段：跑一次 `-run=AtlasFXSetup`，日志里会打印播放器反射结果、序列的通知清单、
-  每条通知解析出的 Niagara 系统与 Offset/Rotation/Scale/NotAttach（`DumpPaperZDPreviewTargets()`）。
+  每条通知解析出的 Niagara 系统与 Offset/Rotation/Scale/NotAttach（`DumpPaperZDPreviewTargets()`），
+  以及**通知蓝图的全部节点与连线**（`DumpBlueprintGraph()`，用来核对上面两条约定）。
 
 ### 18.5 使用
 
