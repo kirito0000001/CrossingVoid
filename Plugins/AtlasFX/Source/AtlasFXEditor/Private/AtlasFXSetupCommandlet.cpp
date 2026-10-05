@@ -24,7 +24,11 @@
 #include "DataHierarchyCommonTypes.h"
 #include "DataHierarchyViewModelBase.h"
 #include "Misc/PackageName.h"
+#include "NiagaraMeshRendererProperties.h"
+#include "NiagaraRendererProperties.h"
+#include "NiagaraSpriteRendererProperties.h"
 #include "NiagaraSystem.h"
+#include "UObject/UObjectIterator.h"
 #include "TaggedAssetBrowserFilters/TaggedAssetBrowser_CommonFilters.h"
 #include "UObject/AssetRegistryTagsContext.h"   // EAssetRegistryTagsCaller 的定义（AssetData.h 里只有前向声明）
 #include "UObject/Package.h"
@@ -43,6 +47,9 @@ namespace AtlasFXSetup
 
 	/** 基础配置的 ProfileName（取自引擎资产 /Niagara/DefaultAssets/TABC_SystemWizard 的字符串表）。 */
 	static const FName WizardProfileName(TEXT("NiagaraWizard.System"));
+
+	/** 采样层材质 /AtlasFX/M_FXAtlasSheet 里的贴图参数名。渲染器上的纹理槽必须写这个名字才对得上。 */
+	static const FName SheetMaterialParameterName(TEXT("Sheet"));
 
 	/** 扩展配置资产。 */
 	static const TCHAR* ConfigPackageName = TEXT("/AtlasFX/TABC_Atlas2DWizard");
@@ -95,6 +102,7 @@ int32 UAtlasFXSetupCommandlet::Main(const FString& Params)
 	UE_LOG(LogAtlasFXSetup, Display, TEXT("=== AtlasFX 模板配置：开始 ==="));
 
 	const bool bConfigOk = BuildWizardConfig();
+	const bool bSeedOk   = SeedRendererMaterialParameters();
 	const bool bTagsOk   = TagTemplates();
 
 	// 新资产要能被对话框里的 Asset Registry 查询看到。
@@ -325,6 +333,87 @@ bool UAtlasFXSetupCommandlet::BuildWizardConfig()
 	UE_LOG(LogAtlasFXSetup, Display, TEXT("已保存分类资产：section=%s / ProfileName=%s / bIsExtension=true"),
 		*TagName.ToString(), *WizardProfileName.ToString());
 	return true;
+}
+
+bool UAtlasFXSetupCommandlet::SeedRendererMaterialParameters()
+{
+	using namespace AtlasFXSetup;
+
+	bool bOk = true;
+
+	for (const TCHAR* TemplatePackage : TemplatePackages)
+	{
+		const FString ObjectPath = ToObjectPath(TemplatePackage);
+
+		UNiagaraSystem* System = LoadObject<UNiagaraSystem>(nullptr, *ObjectPath);
+		if (System == nullptr)
+		{
+			UE_LOG(LogAtlasFXSetup, Error, TEXT("找不到模板资产：%s"), *ObjectPath);
+			bOk = false;
+			continue;
+		}
+
+		UPackage* Package = System->GetPackage();
+		int32 SeededCount = 0;
+
+		// 用对象迭代器按包过滤找渲染器，绕开 FVersionedNiagaraEmitterData 那套版本化句柄 API
+		// （5.7 起在改名：UE_DEPRECATED 提示改用 FVersionedNiagaraEmitterBase）。
+		// 渲染器对象一定住在模板包里，按 GetOutermost() 过滤最稳。
+		for (TObjectIterator<UNiagaraRendererProperties> It; It; ++It)
+		{
+			UNiagaraRendererProperties* Renderer = *It;
+			if (Renderer->GetOutermost() != Package)
+			{
+				continue;
+			}
+
+			// MaterialParameters 是**各渲染器自己的**成员（不在 UNiagaraRendererProperties 基类上），
+			// 所以得按类型分别取（NiagaraMeshRendererProperties.h:380 / NiagaraSpriteRendererProperties.h:365）。
+			FNiagaraRendererMaterialParameters* Parameters = nullptr;
+			if (UNiagaraMeshRendererProperties* MeshRenderer = Cast<UNiagaraMeshRendererProperties>(Renderer))
+			{
+				Parameters = &MeshRenderer->MaterialParameters;
+			}
+			else if (UNiagaraSpriteRendererProperties* SpriteRenderer = Cast<UNiagaraSpriteRendererProperties>(Renderer))
+			{
+				Parameters = &SpriteRenderer->MaterialParameters;
+			}
+
+			if (Parameters == nullptr)
+			{
+				continue;
+			}
+
+			const bool bAlreadySeeded = Parameters->TextureParameters.ContainsByPredicate(
+				[](const FNiagaraRendererMaterialTextureParameter& Entry)
+				{
+					return Entry.MaterialParameterName == SheetMaterialParameterName;
+				});
+
+			if (bAlreadySeeded)
+			{
+				continue;
+			}
+
+			Renderer->Modify();
+			FNiagaraRendererMaterialTextureParameter& Entry = Parameters->TextureParameters.AddDefaulted_GetRef();
+			Entry.MaterialParameterName = SheetMaterialParameterName;
+			Entry.Texture = nullptr;   // 故意留空：用哪个图集由使用者在渲染器上选
+			++SeededCount;
+		}
+
+		if (SeededCount > 0 && SaveAssetPackage(Package, System, TemplatePackage) == false)
+		{
+			bOk = false;
+			continue;
+		}
+
+		UE_LOG(LogAtlasFXSetup, Display,
+			TEXT("渲染器材质参数：%s 补了 %d 个 Sheet 纹理槽（已经有就跳过；填了贴图就不用建材质实例）"),
+			*ObjectPath, SeededCount);
+	}
+
+	return bOk;
 }
 
 bool UAtlasFXSetupCommandlet::TagTemplates()

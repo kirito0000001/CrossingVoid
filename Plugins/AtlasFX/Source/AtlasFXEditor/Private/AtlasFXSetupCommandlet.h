@@ -26,6 +26,13 @@ private:
 	/** 造/更新 /AtlasFX/TABC_Atlas2DWizard：bIsExtension=true、ProfileName=NiagaraWizard.System，内含 CrossingvoidAtlas 分类。 */
 	bool BuildWizardConfig();
 
+	/**
+	 * 给两个模板里的渲染器补一个「Sheet」纹理槽（渲染器的 材质参数 → 纹理参数）。
+	 * 有了它，用模板建系统之后**不需要材质实例** —— 直接在渲染器上选图集贴图，
+	 * 引擎会自己生成 MID（NiagaraMeshRendererProperties.h:440 NeedsMIDsForMaterials）。
+	 */
+	bool SeedRendererMaterialParameters();
+
 	/** 给两个模板资产写 UAT.CrossingvoidAtlas 包元数据（顺手清掉改名前的旧标签），然后保存。 */
 	bool TagTemplates();
 
