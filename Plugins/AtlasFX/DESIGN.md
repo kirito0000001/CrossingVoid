@@ -812,7 +812,16 @@ MeshRenderer Mesh
 - 局限：属性绑定**不参与** DreamFX 的文本链 —— `DreamFXGenerator.cpp:1511-1516` 对 `MaterialParam`
   直接报 `DFX5093: 'MaterialParam' is reserved syntax and is not implemented in v1`。
   所以这条只能由 C++ 命令写进资产；`.dfs` 里看不到，**改完模板不要用 `.dfs` 覆盖回去**（会丢）。
-- 对使用者：从模板建的新系统**零手工**；从旧模板建的既有系统没有这条绑定，得重建或手工加。
+- 对使用者：从模板建的新系统**零手工**；既有系统也**不用重建** —— 命令的目标已经从「两个模板」扩成
+  **「所有把 AtlasFX 的 DI 当用户参数用的系统」**（用 Asset Registry 枚举全部 Niagara 系统，逐个拿
+  `FindAtlasDataInterfaceParameter` 判定；系统里没有我们的 DI 就一个字都不动）。
+  2026-10-05 跑过一次：89 个系统里命中 1 个（`/Game/GameActor2D/Misaka/Material/DefAtk/FX_Defatk`），补了 2 项。
+- ⚠️ 命令是引擎刚起来就跑的，Asset Registry 还在**异步扫描** ⇒ 必须先
+  `SearchAllAssets(/*bSynchronousSearch=*/true)`，否则 `GetAssetsByClass` 返回空表
+  （第一次跑就是「顺手补了 0 个已存在的系统」）。
+- 验证有没有生效：跑完看日志
+  `渲染器材质参数：<资产> 补了 N 项（Sheet 纹理槽 + Sheet ← User.Atlas.ResolvedTexture 属性绑定；已有的跳过）`。
+  日志里基变量打印成 `User.Atlas` ⇒ 用户参数的**存储名带 `User.` 前缀**，绑定里就得写这个名字。
 
 ## 17. 贴图尺寸的坑：异步编译期读到替身 32×32（2026-10-05）
 

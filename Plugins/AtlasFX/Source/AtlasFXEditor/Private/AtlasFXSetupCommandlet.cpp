@@ -33,6 +33,7 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/Texture.h"
 #include "Misc/PackageName.h"
+#include "Modules/ModuleManager.h"
 #include "NiagaraDataInterfaceSpriteAtlas.h"
 #include "NiagaraMeshRendererProperties.h"
 #include "NiagaraRendererProperties.h"
@@ -75,9 +76,9 @@ namespace AtlasFXSetup
 	};
 
 	/** 包路径 → 完整对象路径（/A/B → /A/B.B）。 */
-	static FString ToObjectPath(const TCHAR* PackageName)
+	static FString ToObjectPath(const FString& PackageName)
 	{
-		return FString::Printf(TEXT("%s.%s"), PackageName, *FPackageName::GetShortName(PackageName));
+		return FString::Printf(TEXT("%s.%s"), *PackageName, *FPackageName::GetShortName(PackageName));
 	}
 
 	/** 存一个包，失败时把文件名打进日志。 */
@@ -373,15 +374,63 @@ bool UAtlasFXSetupCommandlet::SeedRendererMaterialParameters()
 		return NAME_None;
 	};
 
+	// 目标包 = 两个模板 + 「所有把 AtlasFX 的 DI 当用户参数用的已存在系统」。
+	// 后者是为了让已经在用这套 DI 的老系统（比如 Misaka 的 FX_Defatk）也自动拿到图集绑定，
+	// 而不是只有从模板新建的系统才有。判定条件故意收得很窄：系统里必须有 AtlasFX 的 DI 才算数。
+	TArray<FString> TargetPackages;
 	for (const TCHAR* TemplatePackage : TemplatePackages)
 	{
-		const FString ObjectPath = ToObjectPath(TemplatePackage);
+		TargetPackages.Add(TemplatePackage);
+	}
+
+	{
+		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+
+		// 命令是引擎刚起来就跑的，Asset Registry 的扫描还是异步的：不等到它扫完，
+		// GetAssetsByClass 直接返回空表（第一次跑就是 0 个系统，老系统一个都没补上）。
+		AssetRegistryModule.Get().SearchAllAssets(/*bSynchronousSearch=*/true);
+
+		TArray<FAssetData> SystemAssets;
+		AssetRegistryModule.Get().GetAssetsByClass(UNiagaraSystem::StaticClass()->GetClassPathName(), SystemAssets, /*bSearchSubClasses=*/false);
+
+		UE_LOG(LogAtlasFXSetup, Display,
+			TEXT("渲染器材质参数：资产库里一共 %d 个 Niagara 系统，逐个看有没有 AtlasFX 的 DI。"),
+			SystemAssets.Num());
+
+		for (const FAssetData& AssetData : SystemAssets)
+		{
+			const FString PackageName = AssetData.PackageName.ToString();
+			if (TargetPackages.Contains(PackageName) == false)
+			{
+				TargetPackages.Add(PackageName);
+			}
+		}
+	}
+
+	int32 PatchedContentSystemCount = 0;
+
+	for (const FString& TargetPackage : TargetPackages)
+	{
+		bool bIsTemplate = false;
+		for (const TCHAR* TemplatePackage : TemplatePackages)
+		{
+			if (TargetPackage == TemplatePackage)
+			{
+				bIsTemplate = true;
+				break;
+			}
+		}
+
+		const FString ObjectPath = ToObjectPath(TargetPackage);
 
 		UNiagaraSystem* System = LoadObject<UNiagaraSystem>(nullptr, *ObjectPath);
 		if (System == nullptr)
 		{
-			UE_LOG(LogAtlasFXSetup, Error, TEXT("找不到模板资产：%s"), *ObjectPath);
-			bOk = false;
+			if (bIsTemplate)
+			{
+				UE_LOG(LogAtlasFXSetup, Error, TEXT("找不到模板资产：%s"), *ObjectPath);
+				bOk = false;
+			}
 			continue;
 		}
 
@@ -391,9 +440,17 @@ bool UAtlasFXSetupCommandlet::SeedRendererMaterialParameters()
 		const FName DiParameterName = FindAtlasDataInterfaceParameter(System);
 		if (DiParameterName.IsNone())
 		{
-			UE_LOG(LogAtlasFXSetup, Warning,
-				TEXT("%s：没找到 AtlasFX 的 DI 用户参数，渲染器的「材质参数 → 属性绑定」这条会跳过（纹理槽照补）。"),
-				*ObjectPath);
+			if (bIsTemplate)
+			{
+				UE_LOG(LogAtlasFXSetup, Warning,
+					TEXT("%s：没找到 AtlasFX 的 DI 用户参数，渲染器的「材质参数 → 属性绑定」这条会跳过（纹理槽照补）。"),
+					*ObjectPath);
+			}
+			else
+			{
+				// 不是模板、又没有 AtlasFX 的 DI ⇒ 这套系统跟我们无关，一个字都别动。
+				continue;
+			}
 		}
 
 		// 用对象迭代器按包过滤找渲染器，绕开 FVersionedNiagaraEmitterData 那套版本化句柄 API
@@ -476,16 +533,25 @@ bool UAtlasFXSetupCommandlet::SeedRendererMaterialParameters()
 			SeededCount += SeededForRenderer;
 		}
 
-		if (SeededCount > 0 && SaveAssetPackage(Package, System, TemplatePackage) == false)
+		if (SeededCount > 0 && SaveAssetPackage(Package, System, *TargetPackage) == false)
 		{
 			bOk = false;
 			continue;
+		}
+
+		if (SeededCount > 0 && bIsTemplate == false)
+		{
+			++PatchedContentSystemCount;
 		}
 
 		UE_LOG(LogAtlasFXSetup, Display,
 			TEXT("渲染器材质参数：%s 补了 %d 项（Sheet 纹理槽 + Sheet ← %s.ResolvedTexture 属性绑定；已有的跳过）"),
 			*ObjectPath, SeededCount, DiParameterName.IsNone() ? TEXT("<无 DI>") : *DiParameterName.ToString());
 	}
+
+	UE_LOG(LogAtlasFXSetup, Display,
+		TEXT("渲染器材质参数：另外顺手补了 %d 个已存在的系统（它们本来就在用 AtlasFX 的 DI）。"),
+		PatchedContentSystemCount);
 
 	return bOk;
 }
