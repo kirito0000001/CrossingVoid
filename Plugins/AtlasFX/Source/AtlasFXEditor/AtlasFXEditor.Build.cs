@@ -29,6 +29,7 @@ public class AtlasFXEditor : ModuleRules
 			"Niagara",               // UNiagaraSystem
 			"AtlasFX",               // UNiagaraDataInterfaceSpriteAtlas（属性绑定要按类型找它）
 			"PaperZD",               // UPaperZDAnimPlayer / UPaperZDAnimNotify（序列编辑器特效预览）
+			"Paper2D",               // UPaperFlipbook / UPaperFlipbookComponent / UPaperSprite（算挂点差）
 		});
 	}
 }

@@ -15,6 +15,9 @@
 #include "NiagaraSystem.h"
 #include "Notifies/PaperZDAnimNotify.h"
 #include "Notifies/PaperZDAnimNotify_Base.h"
+#include "PaperFlipbook.h"
+#include "PaperFlipbookComponent.h"
+#include "PaperSprite.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/UnrealType.h"
 
@@ -26,20 +29,25 @@ static TAutoConsoleVariable<int32> CVarAtlasFXPreviewFX(
 	TEXT("1 = 在 PaperZD 序列编辑器预览里自动生成通知上的 Niagara 特效（默认）；0 = 关闭。"),
 	ECVF_Default);
 
-// 2026-10-05 定案（用户要求）：**预览不做任何自己的偏移与朝向补偿** ——
-// 通知里的 Offset / Rotation / Scale 在预览里怎么摆，游戏里就怎么摆，两边都直接照抄
-// TxSpawn 蓝图的连线（见 SpawnForNotify 里的注释）。
+static TAutoConsoleVariable<int32> CVarAtlasFXPreviewFootAlign(
+	TEXT("AtlasFX.PaperZD.FootAlign"),
+	1,
+	TEXT("1 = 预览把特效对齐到精灵底边（脚底），与游戏里挂在角色根组件一致（默认）；0 = 不做任何位置换算。"),
+	ECVF_Default);
+
+// 预览与游戏唯一的差别是**挂点**：游戏挂在角色根组件（原点在脚底），预览只能挂渲染组件
+// （翻转书，原点在精灵轴心 = 画布中心）。AtlasFX.PaperZD.FootAlign 把这个差换算掉：
+// 偏移量 = 精灵底边相对翻转书原点的 Z（负值），从精灵烘好的渲染顶点算出来，**与当前帧无关**，
+// 对同一本翻转书恒定（实测 Misaka 的 DefAtk = -257 cm，与 640 px 画布 + 中心轴心吻合）。
 //
-// 这里曾经挂过两个补偿，都已删除，记下来免得再走一遍：
+// 这里曾经挂过两个补偿，记下来免得再走一遍：
 //   ① AtlasFX.PaperZD.PreviewYaw（曾默认 90）：误判「预览相机沿 Y、游戏相机沿 X」。
 //      实际两个相机**同轴**（都沿 Y 轴看），任何 Yaw 补偿都会让预览与游戏不一致。
 //      最初「看不见」的真因是网格模板里的 MeshYaw = -90 把面片转成了侧对镜头
 //      （**游戏里也一样是一条缝**），模板已改回 0，见 DFX/Modules/M_SpriteAtlasSize.dfm。
-//   ② AtlasFX.PaperZD.PreviewFootAlign（曾默认 1）：用精灵包围盒底边当脚底，把特效往下压。
-//      游戏里特效挂在**角色根组件**（原点在脚底）上，预览里只有**渲染组件（翻转书）**，
-//      它的原点在**精灵画布中心** —— 这个差是**挂点不同**造成的，而且包围盒随帧/随序列变，
-//      补偿值不稳定（实测不同序列 -257 / -300 / -261 / -279 cm）。要统一得从挂点下手，
-//      见 DESIGN.md §18.4「挂点」那条。
+//   ② AtlasFX.PaperZD.PreviewFootAlign（曾默认 1，2026-10-05 删过一次）：第一版用**当前帧**的
+//      包围盒算脚底，值随帧/随序列乱跳（-257 / -300 / -261 / -279 cm）⇒ 已换成上面这个与帧
+//      无关的算法后重新启用。若要彻底不换算（改挂点或改精灵轴心），见 DESIGN.md §18.4「挂点」。
 
 namespace
 {
@@ -199,6 +207,27 @@ namespace
 	}
 
 	/**
+	 * 精灵底边相对翻转书原点的 Z（负值）。
+	 *
+	 * 游戏把特效挂在角色根组件（原点 = 脚底）上，预览只能挂翻转书（原点 = 精灵轴心，
+	 * 通常是画布中心），同一个 Offset 因此差出这一段。这里从精灵烘好的渲染顶点算底边位置，
+	 * **与当前播放到第几帧无关**，所以对一本翻转书是恒定值（旧版用当前帧包围盒才不稳定）。
+	 */
+	float ComputeFootOffsetZ(UPrimitiveComponent* RenderComponent)
+	{
+		UPaperFlipbookComponent* FlipbookComponent = Cast<UPaperFlipbookComponent>(RenderComponent);
+		const UPaperFlipbook* Flipbook = FlipbookComponent ? FlipbookComponent->GetFlipbook() : nullptr;
+		const UPaperSprite* Sprite = (Flipbook && Flipbook->GetNumFrames() > 0) ? Flipbook->GetSpriteAtFrame(0) : nullptr;
+		if (!Sprite)
+		{
+			return 0.0f;
+		}
+
+		const FBoxSphereBounds SpriteBounds = Sprite->GetRenderBounds();
+		return SpriteBounds.Origin.Z - SpriteBounds.BoxExtent.Z;
+	}
+
+	/**
 	 * 为一条通知生成特效，逐条对齐 TxSpawn 蓝图：
 	 *   TXComp = 人物根组件；NotAttach 为真走世界生成，否则挂到根组件上；
 	 *   位置带「1P 标签翻转」；缩放一律靠 spawn 之后的 SetRelativeScale3D。
@@ -238,13 +267,18 @@ namespace
 		const float Sign = bFirstPerson ? 1.0f : -1.0f;
 		const FVector SignedOffset(Offset.X * Sign, Offset.Y * Sign, Offset.Z);
 
+		// 挂点差：游戏挂在角色根组件（脚底），预览只能挂翻转书（画布中心）。
+		// 换算量由精灵自己算，与当前帧无关（见 ComputeFootOffsetZ）。
+		const FVector FootOffset(0.0f, 0.0f,
+			(CVarAtlasFXPreviewFootAlign.GetValueOnAnyThread() != 0) ? ComputeFootOffsetZ(RenderComponent) : 0.0f);
+
 		UNiagaraComponent* Spawned = nullptr;
 		if (bNotAttach)
 		{
 			// 蓝图：Spawn System at Location（世界位置 + 偏移，Scale 直接给，池 = AutoRelease）。
 			Spawned = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
 				World, System,
-				RenderComponent->GetComponentLocation() + SignedOffset,
+				RenderComponent->GetComponentLocation() + FootOffset + SignedOffset,
 				Rotation,
 				Scale,
 				true, true, ENCPoolMethod::AutoRelease, true);
@@ -252,13 +286,16 @@ namespace
 		else
 		{
 			// 蓝图：Spawn System Attached —— Location 用的是**没动过的 Offset**
-			// （蓝图里挂点这一支不做镜像，镜像只出现在 NotAttach 的「计算真正位置」里）。
+			// （蓝图里挂点这一支不做镜像，镜像只出现在 NotAttach 的「计算真正位置」里），
+			// 这里只额外加上「挂点差」FootOffset。Location Type 与蓝图一致：Snap to Target,
+			// Including Scale（没传 Scale 时它与 KeepRelativeOffset 在引擎里等价，
+			// 见 NiagaraFunctionLibrary.cpp:254-281）。
 			// 注意这个函数**没有 Scale 参数**，蓝图也是靠随后那句 SetRelativeScale3D 定缩放的，
 			// 别把 scale 塞进 spawn。
 			Spawned = UNiagaraFunctionLibrary::SpawnSystemAttached(
 				System, RenderComponent, NAME_None,
-				Offset, Rotation,
-				EAttachLocation::KeepRelativeOffset,
+				FootOffset + Offset, Rotation,
+				EAttachLocation::SnapToTargetIncludingScale,
 				true, true, ENCPoolMethod::None, true);
 		}
 
@@ -268,10 +305,10 @@ namespace
 			Spawned->SetRelativeScale3D(Scale);
 
 			UE_LOG(LogAtlasFXPreview, Log,
-				TEXT("预览生成特效：%s（通知 %s，时间 %.3f 秒，%s，Offset %s，Rotation %s，Scale %s，组件 %s）"),
+				TEXT("预览生成特效：%s（通知 %s，时间 %.3f 秒，%s，Offset %s，Rotation %s，Scale %s，脚底换算 %.1f cm，组件 %s）"),
 				*System->GetName(), *Notify->GetClass()->GetName(), Notify->Time,
 				bNotAttach ? TEXT("世界生成") : TEXT("挂在渲染组件上"),
-				*Offset.ToString(), *Rotation.ToString(), *Scale.ToString(), *Spawned->GetName());
+				*Offset.ToString(), *Rotation.ToString(), *Scale.ToString(), FootOffset.Z, *Spawned->GetName());
 		}
 	}
 
