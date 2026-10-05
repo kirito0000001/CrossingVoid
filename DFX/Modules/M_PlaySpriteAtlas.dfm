@@ -39,6 +39,7 @@ Module(Name="Modules/Play_SpriteAtlas", Root="Plugin.AtlasFX")
         // JSON 配置只支持写在系统的输入值上（.dfs 的 Properties / 模块调用实参）。
         DI<SpriteAtlas> Atlas;
         float PlayMode   = 0.0 [ Description="播放模式：0 = 按 Flipbook 帧率（默认）；1 = 按粒子生命长度播完一遍；2 = 用 FrameIndex 直接指定帧号。" ];
+        float Loop       = 0.0 [ Description="0 = 只播一遍，播完停在最后一帧（默认）；1 = 循环播放（按帧数回绕）。" ];
         float PlayRate   = 1.0 [ Description="播放速率倍率；负值倒放。模式0：1.0 = 正好等于 Flipbook 帧率；模式1：1.0 = 一个生命周期播完一遍。" ];
         float StartFrame = 0.0 [ Description="起始帧偏移；接 Random Float in Range 即可随机起帧。" ];
         float FrameIndex = 0.0 [ Description="模式2专用：直接指定当前帧号（可接 Float from Curve 做曲线控制）。" ];
@@ -78,9 +79,16 @@ Module(Name="Modules/Play_SpriteAtlas", Root="Plugin.AtlasFX")
                        + Mode1 * (StartFrame + Particles.NormalizedAge * FrameCountF * PlayRate)
                        + Mode2 * (StartFrame + FrameIndex);
 
-        // 回绕直接用 HLSL 正模算，不调 DI 的 WrapFrame：省一次 VM 调用，
-        // 而且负值（PlayRate<0 倒放）也天然正确 —— floor 版正模对负输入同样落在 [0, FrameCountF)。
-        float Frame = RawFrame - floor(RawFrame / FrameCountF) * FrameCountF;
+        // 播完怎么办（2026-10-05 按用户要求改）：
+        //   默认 Loop = 0 —— **只播一遍**，播完停在最后一帧。时长交给配套的
+        //   /AtlasFX/Modules/Sprite_Atlas_Duration 模块（寿命 = 帧数 ÷ 帧率），
+        //   所以正常情况下帧号刚好走到最后一帧、粒子就寿终了；clamp 是保险丝：
+        //   浮点误差、StartFrame 偏移、PlayRate 偏小都不会让画面突然跳回第 0 帧。
+        //   Loop = 1 时保留原来的回绕（正模，负值倒放也天然正确）。
+        // 回绕直接用 HLSL 正模算，不调 DI 的 WrapFrame：省一次 VM 调用。
+        float Wrapped = RawFrame - floor(RawFrame / FrameCountF) * FrameCountF;
+        float Clamped = clamp(RawFrame, 0.0, FrameCountF - 1.0);
+        float Frame   = lerp(Clamped, Wrapped, saturate(Loop));
 
         // 三包数据：图集矩形(x,y,w,h 像素) / 画布矩形 / 尺寸包(贴图W, 贴图H, 画布W, 画布H)。
         // 出参顺序必须与 DI 里 AddOutput 的顺序一致；出参必须是未初始化的普通局部变量。

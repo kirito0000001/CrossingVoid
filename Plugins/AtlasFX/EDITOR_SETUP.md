@@ -13,14 +13,20 @@
 | --- | --- | --- | --- |
 | 数据 | `Sprite Atlas`（C++ 数据接口） | `Plugins/AtlasFX/Source/AtlasFX/` | **关编辑器** → `Build.bat`（见 §6） |
 | 播放 | `/AtlasFX/Modules/Play_SpriteAtlas` | `DFX/Modules/M_PlaySpriteAtlas.dfm` | 存盘即自动重编 |
+| 时长（精灵/网格都要） | `/AtlasFX/Modules/Sprite_Atlas_Duration` | `DFX/Modules/M_SpriteAtlasDuration.dfm` | 存盘即自动重编 |
 | 尺寸（网格用） | `/AtlasFX/Modules/Sprite_Atlas_Size` | `DFX/Modules/M_SpriteAtlasSize.dfm` | 存盘即自动重编 |
 | 采样 | `/AtlasFX/M_FXAtlasSheet` | `Plugins/AtlasFX/DShader/M_FXAtlasSheet.dss` | 存盘即自动重编 |
-| 示例系统（精灵） | `/AtlasFX/Effects/NS_AtlasDefAtk` | `DFX/Effects/NS_AtlasDefAtk.dfs` | 存盘即自动重编 |
-| 示例系统（网格） | `/AtlasFX/Effects/NS_AtlasDefAtk_Mesh` | `DFX/Effects/NS_AtlasDefAtk_Mesh.dfs` | 存盘即自动重编 |
+| 模板（精灵） | `/AtlasFX/Templates/NS_Atlas2D_Sprite` | `DFX/Templates/NS_Atlas2D_Sprite.dfs` | 存盘即自动重编 |
+| 模板（网格） | `/AtlasFX/Templates/NS_Atlas2D_Mesh` | `DFX/Templates/NS_Atlas2D_Mesh.dfs` | 存盘即自动重编 |
+| 向导分类 | `/AtlasFX/TABC_Atlas2DWizard` | 由 `AtlasFXSetup` 命令生成（见 §8） | 重跑命令 |
 
-两个示例系统播的是同一份 Defatk 图集，配方逐项对齐（同一个数据接口、同一个播放模块、同一个材质），
+两个模板播的是同一份 Defatk 图集，配方逐项对齐（同一个数据接口、同一个播放模块、同一个材质），
 区别只有渲染器：精灵版挂 `SpriteRenderer`，网格版挂 `MeshRenderer` + `Sprite_Atlas_Size`。
 **想验证"两版画面是否一致"，把它们并排丢进关卡对比即可。**
+新建 Niagara 系统时，对话框左侧的 **`CrossingvoidAtlas`** 分类里就能直接选这两个模板。
+
+**播放契约（默认就是对的，别乱改）**：帧速度 = Flipbook 自带帧率、一次播放的总时长 = 帧数 ÷ 帧率、
+**默认只播一遍**（播完停在最后一帧）。一次性特效在预览里播完就停，要重看得按时间轴重启。
 
 ⚠️ **模块是编译时内联进系统的**：改完 `.dfm` 光重编模块不生效，**必须重编用到它的 `.dfs`**（见 §7）。
 
@@ -189,7 +195,7 @@ pwsh -File Plugins/DreamShader/.skill/dsc.ps1 check Plugins/AtlasFX/DShader/M_FX
 改完想核对资产里到底写进去没有（**反编译只对系统有效**）：
 
 ```powershell
-pwsh -File Plugins/DreamFX/.skill/dfx.ps1 decompile /AtlasFX/Effects/NS_AtlasDefAtk_Mesh -Out C:\CrossingVoid\Saved\dfx_dec_mesh.txt
+pwsh -File Plugins/DreamFX/.skill/dfx.ps1 decompile /AtlasFX/Templates/NS_Atlas2D_Mesh -Out C:\CrossingVoid\Saved\dfx_dec_mesh.txt
 # 产物是 UTF-16LE，用 [IO.File]::ReadAllText($p,[Text.Encoding]::Unicode) 读
 ```
 
@@ -214,3 +220,43 @@ pwsh -File Plugins/DreamFX/.skill/dfx.ps1 decompile /AtlasFX/Effects/NS_AtlasDef
 | 网格版画面跟着**相机**转，特效转不动它 | 渲染器 `Facing Mode` 被填成了 `Camera Plane`（或 `Camera Position` / `Velocity`）。这几种模式每帧用相机重建朝向，会**覆盖**掉 `Particles.MeshOrientation`。改回不填（默认 `Default`） |
 | **材质编辑器预览里是空的** | 预览没有粒子数据 ⇒ 三个动态参数全 0 ⇒ 正常路径 `NaN` ⇒ 全透明。材质有兜底，**应当能看到整张图集**；若空白说明兜底没生效（见 §5）。运行时在网格上看到"整张图集"则是相反的含义：参数没送到 |
 | **一个系统里所有发射器突然全都看不见** | 先逐个确认发射器是不是**启用的**：资产里的 `Enabled` 状态可能被留成 `false`（源码里没写过这个属性也会中招），禁用后什么都不跑却毫无提示。排查脚本/重建系统时建议在源码里显式写 `Enabled = true;`，见 `DESIGN.md` §14.6 第 4 条 |
+
+---
+
+## 8. 模板与「创建 Niagara 系统」里的分类
+
+新建 Niagara 系统时，对话框左侧会出现 **`CrossingvoidAtlas`** 一栏，点它正好列出两个模板：
+
+- `/AtlasFX/Templates/NS_Atlas2D_Sprite` —— 精灵渲染器版
+- `/AtlasFX/Templates/NS_Atlas2D_Mesh` —— 网格渲染器版
+
+选中就能以它为底新建系统（模板本身不会被改）。
+
+### 这两样东西是谁做的
+
+都不是手点的，跑一条命令生成/刷新：
+
+```powershell
+# 编辑器必须先关掉
+& 'D:\UnrealEngine-5.8.2\Engine\Binaries\Win64\UnrealEditor-Cmd.exe' 'C:\CrossingVoid\CrossingVoid.uproject' `
+    -run=AtlasFXSetup -stdout -FullStdOutLogOutput -unattended -nopause -nosplash
+# 完整日志：C:\CrossingVoid\Saved\atlasfx_setup.log
+```
+
+命令做四件事（幂等，可重复跑）：
+1. 重建 `/AtlasFX/TABC_Atlas2DWizard`（「创建 Niagara 系统」向导的分类扩展资产）；
+2. 给两个模板写 `UAT.CrossingvoidAtlas` 标签（顺手清掉改名前的旧标签）；
+3. 强制重扫 `/AtlasFX`；
+4. 重扫**之后**刷新 Asset Registry 标签，并用和对话框一样的查询自查一遍。
+
+命令的 C++ 在 `Plugins/AtlasFX/Source/AtlasFXEditor/`（改了要关编辑器重编，见 §6）。
+
+### 两个必须知道的坑
+
+- **分类的过滤器是按目录（`/AtlasFX/Templates`）筛的，不是按标签。**
+  用户资产标签（`UAT.*`）进不了 Asset Registry —— 实测连引擎自己的 `UAT.Template` / `UAT.Lightweight`
+  都查到 0 个资产，所以「按标签过滤」的分类栏永远是空的。标签照写（Content Browser 里能看到、能筛），
+  但分类栏的显示走目录。**新增模板放进 `DFX/Templates/` 就自动出现在分类里。**
+- **旧的 `/AtlasFX/Effects/NS_AtlasDefAtk*` 已经删了**（它们就是现在这两个模板）。
+  关卡 `FXtestMap` 里那两个 Actor 因此会丢掉系统引用，在编辑器里重新指到
+  `/AtlasFX/Templates/NS_Atlas2D_Sprite` / `_Mesh` 即可。

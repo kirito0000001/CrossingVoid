@@ -1,4 +1,5 @@
-// NS_AtlasDefAtk —— Defatk 闪电图集特效（文本源，DreamFX 生成）
+// NS_Atlas2D_Sprite —— AtlasFX「精灵渲染器」模板（文本源，DreamFX 生成）。
+// 默认挂 Defatk 闪电图集当示例：换成自己的图集只需改下面 Properties 里的 Flipbook 路径。
 //
 // 数据层：AtlasFX 插件的 C++ 数据接口 UNiagaraDataInterfaceSpriteAtlas（只支持 CPU 模拟）。
 // 播放层：/AtlasFX/Modules/Play_SpriteAtlas —— 由 DFX/Modules/M_PlaySpriteAtlas.dfm 生成，
@@ -7,8 +8,14 @@
 // 采样层：/AtlasFX/M_FXAtlasSheet —— Unlit + Additive，按「画布还原」采样：
 //         面片 = 画布尺寸，帧放回它在画布里的位置（用 DynamicParameter 0/1/2）。
 //
-// 改这个文件后：关掉编辑器 → pwsh -File Plugins/DreamFX/.skill/dfx.ps1 build DFX/Effects/NS_AtlasDefAtk.dfs
-System(Name="Effects/NS_AtlasDefAtk", Root="Plugin.AtlasFX")
+// 播放契约（2026-10-05 按用户要求定）：一颗粒子 = 一次干净的播放 ——
+//   帧速度 = Flipbook 帧率（Play_SpriteAtlas 的 PlayMode 0）；
+//   时长   = Flipbook 总时长（Sprite_Atlas_Duration：帧数 ÷ 帧率 = 6 ÷ 15 = 0.4 秒）；
+//   默认只播一遍（Play_SpriteAtlas 的 Loop = 0，播完停在最后一帧）；
+//   发射器一次性（EmitterState Once + Complete，t = 0 只发一颗粒子）。
+//
+// 改这个文件后：关掉编辑器 → pwsh -File Plugins/DreamFX/.skill/dfx.ps1 build DFX/Templates/NS_Atlas2D_Sprite.dfs
+System(Name="Templates/NS_Atlas2D_Sprite", Root="Plugin.AtlasFX")
 {
     Settings = {
         WarmupTime  = 0.0;
@@ -31,8 +38,8 @@ System(Name="Effects/NS_AtlasDefAtk", Root="Plugin.AtlasFX")
         // 仍然可用，那种情况下不自动烘。
         DI<SpriteAtlas> Atlas = "{\"Flipbook\":\"/Game/AssetMaterial/FXs/通用Flipbook/Defatk1.Defatk1\"}";
 
-        float SizeScale  = 1.0 [ Group="图集"; SortPriority=10;
-            Description="1 像素对应多少世界单位（1.0 = 1 厘米，即 UE 默认单位）。面片尺寸 = 目标尺寸 × 这个值：1.0 时画布 928×640 = 9.28×6.4 米，闪电本体 1.7～3.6 米；想要更大直接乘。" ];
+        float SizeScale  = 0.5 [ Group="图集"; SortPriority=10;
+            Description="1 像素对应多少世界单位（1.0 = 1 厘米，即 UE 默认单位）。面片尺寸 = 目标尺寸 × 这个值：默认 0.5 时画布 928×640 = 4.64×3.2 米，闪电本体约 0.85～1.8 米；想要更大直接乘。" ];
         float FitFrame   = 0.0 [ Group="图集"; SortPriority=12;
             Description="面片取哪个尺寸：0 = 画布还原（面片 = 整块画布 928×640，帧放回它在画布里的位置，默认）；1 = 铺满（面片 = 当前帧自己的矩形）。" ];
         float PlayMode   = 0.0 [ Group="图集"; SortPriority=15;
@@ -45,7 +52,7 @@ System(Name="Effects/NS_AtlasDefAtk", Root="Plugin.AtlasFX")
             Description="播放速率倍率，负值倒放。模式0：1.0 = 正好等于 Flipbook 帧率；模式1：1.0 = 一个生命周期播完一遍。" ];
     }
 
-    Emitter DefAtk
+    Emitter Atlas2D
     {
         Settings = {
             SimTarget          = CPU;      // 数据接口第一步只支持 CPU
@@ -57,15 +64,26 @@ System(Name="Effects/NS_AtlasDefAtk", Root="Plugin.AtlasFX")
         }
 
         EmitterUpdate = {
-            // Self + Infinite：发射器自己管生命周期，一直循环发射。
-            EmitterState(LifeCycleMode = Self, LoopBehavior = Infinite);
+            // 一次性发射器（2026-10-05 按用户要求改）：只发一发，之后发射器自己收工。
+            // 形状照抄工程里能用的 Leng刀光：Self + Once + Complete + LoopDuration = 1.0。
+            //   InactiveResponse = Complete ⇒ 粒子全部死光后发射器进入完成状态；
+            //   LoopBehavior     = Once     ⇒ 不循环；
+            //   LoopDuration     = 1.0      ⇒ 发射器最多活跃 1 秒（粒子自己 0.4 秒就寿终了，
+            //                                 这 1 秒是给发射器留的收尾时间）。
+            EmitterState(
+                LifeCycleMode    = Self,
+                InactiveResponse = Complete,
+                LoopBehavior     = Once,
+                LoopDurationMode = Fixed,
+                LoopDuration     = 1.0
+            );
 
-            // 为什么要有 burst：SpawnRate 走的是「间隔累加器」（NiagaraEmitterInstanceImpl.cpp:386/1730），
-            // 每帧累加 SpawnRate × dt，从 0 开始 —— SpawnRate=1.0 时第一颗粒子要等 1 秒才凑够，
-            // 画面就是「前一秒什么都没有」。加一发 t=0 的即时 burst 补上开头，之后仍由 SpawnRate 每秒一发。
+            // 唯一的一发：t = 0 立刻生成 1 颗粒子。
+            // （之前这里还有 SpawnRate(1.0) 做「每秒一发」的循环发射 —— 一次性特效不需要它了。
+            //   顺带记一下当初为什么必须 burst：SpawnRate 走「间隔累加器」
+            //   NiagaraEmitterInstanceImpl.cpp:386/1730，每帧累加 SpawnRate × dt、从 0 开始，
+            //   SpawnRate=1.0 时第一颗粒子要等满 1 秒才凑够 ⇒ 开头那一秒是空的。）
             SpawnBurst_Instantaneous(SpawnCount = 1, SpawnTime = 0.0);
-
-            SpawnRate(SpawnRate = 1.0);
         }
 
         ParticleSpawn = {
@@ -73,8 +91,13 @@ System(Name="Effects/NS_AtlasDefAtk", Root="Plugin.AtlasFX")
             // LifetimeMode 是静态开关，必须写在它管辖的 Lifetime 之前。
             Spawn/Initialization/V2/InitializeParticle(
                 LifetimeMode = DirectSet,
-                Lifetime     = 1.0
+                Lifetime     = 0.4   // 兜底值 = 图集时长（6 帧 ÷ 15 帧/秒）；下一行的模块会按 DI 实际值重算
             );
+
+            // 寿命对齐图集动画的总时长（帧数 ÷ 帧率）—— 用户要的「时长也一样」那半。
+            // 必须紧跟 InitializeParticle：寿命要在粒子出生的那一帧定下来
+            // （Play_SpriteAtlas 是 ParticleUpdate，那时候改 Lifetime 只会让年龄跳变）。
+            Sprite_Atlas_Duration(Atlas = User.Atlas);
         }
 
         ParticleUpdate = {
@@ -89,7 +112,11 @@ System(Name="Effects/NS_AtlasDefAtk", Root="Plugin.AtlasFX")
                 FitFrame   = User.FitFrame,
                 StartFrame = User.StartFrame,
                 FrameIndex = User.FrameIndex,
-                PlayRate   = User.PlayRate
+                PlayRate   = User.PlayRate,
+                // Loop 显式写死 0.0（只播一遍，播完停在最后一帧）—— **故意不做成用户参数**：
+                // 本工程默认就是「一次干净的播放」，想让它循环就把这里改成 1.0
+                // （避免面板上留一个改默认值不刷新的存量行 —— 实测踩过）。
+                Loop       = 0.0
             );
         }
 

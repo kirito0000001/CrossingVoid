@@ -126,10 +126,21 @@ UV = (整数格 + 格内UV) × (1/列数, 1/行数)
   原设计是三个模块 `Play_SpriteAtlas_Age` / `_Time` / `_Frame`，实际合并成一个：
   三种模式共用同一条"回绕 → 取矩形 → 写 DMP → 写 SpriteSize"的尾巴，拆开只是三份重复。
   源文件 `DFX/Modules/M_PlaySpriteAtlas.dfm`
-- **MVP 有**：`Start Frame` / `Frame Offset`（接 `Random Float in Range` 就是随机起帧）
-- **MVP 没有（留第二步）**：`End Frame` / `Loop` 开关 / "一个生命周期播 N 遍" / `Pause` / 倒放 / 按粒子 ID 哈希的确定性随机起帧。
-  现在三种模式都是**恒定回绕**（`Raw - floor(Raw/N)*N`，负值也落在 `[0,N)`），
-  "一炮只播一遍"靠 `Lifetime = 帧数 / 帧率` 实现
+- **MVP 有**：`Start Frame` / `Frame Offset`（接 `Random Float in Range` 就是随机起帧）/ `Loop`
+- **还没做（留第二步）**：`End Frame` / `Pause` / 倒放 / 按粒子 ID 哈希的确定性随机起帧。
+- **播放契约（2026-10-05 定案；用户原话："播放的时候，帧速度都和flip一样，时长也一样，默认都只播放一次"）**：
+  - 帧速度 = Flipbook 自带帧率（`Atlas.GetFps()`，Defatk 是 15）
+  - 一次播放的总时长 = 帧数 ÷ 帧率（Defatk 6 帧 ÷ 15 = 0.4 秒）
+  - 默认只播一遍，播完停在最后一帧；`Loop = 1` 才回到旧的恒定回绕
+  - 落地方式：① 新增模块 `Sprite_Atlas_Duration`（`Usage = ParticleSpawn`，源文件 `DFX/Modules/M_SpriteAtlasDuration.dfm`）
+    写 `Particles.Lifetime = max(FrameCount,1) / max(Fps,0.0001) * max(DurationScale,0.0001)`；
+    ② `Play_SpriteAtlas` 的帧号从"恒定回绕"改成 `Frame = lerp(clamp(Raw, 0, N-1), 回绕值, saturate(Loop))`
+    （**不用 `if`** —— VectorVM 会把分支展平成 select，见 `ir_vm_flatten_branches_to_selects_visitor.cpp:110-185`）
+  - 发射器配套：`EmitterState(LifeCycleMode=Self, InactiveResponse=Complete, LoopBehavior=Once, LoopDurationMode=Fixed, LoopDuration=1.0)`
+    + `SpawnBurst_Instantaneous(SpawnCount=1, SpawnTime=0.0)`，**不要 `SpawnRate`**（形状照抄工程里的 `Leng刀光`）
+  - ⚠️ `Sprite_Atlas_Duration` 必须是 `ParticleSpawn`：`Play_SpriteAtlas` 在 `ParticleUpdate`，
+    那时改 `Lifetime` 只会让 `NormalizedAge` 跳变，帧号跟着跳
+  - ⚠️ 一次性特效在编辑器预览里播完就停，要重看得按时间轴重启（不是坏了）
 - 输出：`Particles.DynamicMaterialParameter` / `...Parameter1` / `...Parameter2`（见 §4.1）
   - ⚠️ **第一个属性名没有数字**（引擎 `NiagaraModule.cpp:448-451`），它对应材质 `DynamicParameter` 的**索引 0**，
     `...Parameter1` → 索引 1、`...Parameter2` → 索引 2（`NiagaraSpriteRendererProperties.cpp:355-358` 做映射）。
@@ -692,3 +703,60 @@ MeshRenderer Mesh
 一次就能同时读出"网格 UV 是不是 0..1"和"三个动态参数到没到"。实测结论：
 网格的 `TexCoord` 正常落在 0..1、动态参数也确实送达 ⇒ 数据通路本身是好的，问题只在朝向。
 排查完记得删掉对照组，并把材质换回正式版（正式版函数体在 `.dss` 文件头注释里留了备份）。
+
+## 15. 模板与向导分类（2026-10-05）
+
+用户需求（原话）："可以把插件里做干净，做两个Niagara模板吧，标签是Crossingvoid2D"；
+随后改名（原话）："名字换成CrossingvoidAtlas吧"。
+
+### 15.1 两个模板
+
+原先做验证用的两个示例特效 `NS_AtlasDefAtk` / `NS_AtlasDefAtk_Mesh` **直接改造成模板**（用户原话："我是不需要了"）：
+
+| 文本源 | 资产 | 渲染器 |
+|---|---|---|
+| `DFX/Templates/NS_Atlas2D_Sprite.dfs` | `/AtlasFX/Templates/NS_Atlas2D_Sprite` | Sprite 渲染器 |
+| `DFX/Templates/NS_Atlas2D_Mesh.dfs` | `/AtlasFX/Templates/NS_Atlas2D_Mesh` | Mesh 渲染器（`FXDefault` 面片 + `MeshYaw = -90`） |
+
+两个模板默认挂 Defatk 图集当示例，换图集只改 DI 的 Flipbook 路径；发射器名 `Atlas2D` / `Atlas2D_Mesh`。
+旧的 `Plugins/AtlasFX/Content/Effects/NS_AtlasDefAtk*.uasset` 已从 git 删除
+（`Content/MapS/FXtestMap.umap` 里那两个 Actor 会因此丢掉系统引用，需要在编辑器里换成 `/AtlasFX/Templates/NS_Atlas2D_*`）。
+
+### 15.2 向导分类：`CrossingvoidAtlas`
+
+「创建 Niagara 系统」对话框左侧那栏来自 `UTaggedAssetBrowserConfiguration` 的 `FilterRoot`。
+引擎基础配置是 `/Niagara/DefaultAssets/TABC_SystemWizard`（`ProfileName = NiagaraWizard.System`，6129 B），
+是引擎资产、不该动；所以 AtlasFX 另放一个**扩展资产** `/AtlasFX/TABC_Atlas2DWizard`
+（`bIsExtension = true` + 同一个 ProfileName），对话框打开时会把它复制进基础配置
+（`STaggedAssetBrowser.cpp:194-318 ApplyFilterExtensions`）。
+
+- 左侧列表 = `FilterRoot` 的 **children**（引擎那份是 5 个：`All` / `Recent` / `Template` / `Learning Content` / `Lightweight`）；
+  `Sections` 只是给 children 做 `FDataHierarchyElementMetaData_SectionAssociation` 用的分组。
+- ⚠️ **section 只能进 `Sections`，不能同时挂成 root 的 child** —— `IsDataValid` 会把 child 逐个比对
+  `ExtensionFilterClasses`，而 `UTaggedAssetBrowserSection` 不在名单里（报错）。
+- ⚠️ **分类里的过滤器只能用目录，不能用用户资产标签**：`UTaggedAssetBrowserFilter_UserAssetTag` 的 AR 预过滤写的是
+  `Filter.TagsAndValues.Add("UAT.<标签>")`（`TaggedAssetBrowser_CommonFilters.cpp:63-68`），而 `UAT.*` **进不了 Asset Registry** ——
+  实测连引擎自己的 `UAT.Template` / `UAT.Lightweight` / `UAT.LearningContent` 都查到 **0** 个资产。
+  所以分类改用 `UTaggedAssetBrowserFilter_Directories`（`DirectoryPaths = /AtlasFX/Templates`，`FilterName = CrossingvoidAtlas`），实测查到 2 个。
+- 标签照写不误：两个模板的包元数据里有 `UAT.CrossingvoidAtlas`（Content Browser 的 Manage Tags 界面能用）。
+- 扩展资产必须**已保存并进 Asset Registry**（`GetExtensionAssets` 用 `bIncludeOnlyOnDiskAssets=true` 查）。
+
+### 15.3 收尾命令 `AtlasFXSetup`
+
+模块 `Plugins/AtlasFX/Source/AtlasFXEditor`（Editor 类型，已在 `AtlasFX.uplugin` 注册成第二个模块）。命令幂等，可重复跑：
+
+```
+"D:\UnrealEngine-5.8.2\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" "C:\CrossingVoid\CrossingVoid.uproject" ^
+    -run=AtlasFXSetup -stdout -FullStdOutLogOutput -unattended -nopause -nosplash
+```
+
+它做四件事：① 重建 `/AtlasFX/TABC_Atlas2DWizard` 的层级（section + 目录过滤器 + root child + SectionAssociation）；
+② 给两个模板写 `UAT.CrossingvoidAtlas`，并清掉改名前的 `UAT.Crossingvoid2D`；③ `ScanPathsSynchronous("/AtlasFX", true)`；
+④ **重扫之后**再 `AssetUpdateTags(..., FullUpdate)`，并用和对话框一样的 AR 查询自查。
+顺序很重要：`bForceRescan` 会用文件头重建 AR 条目，把先推进去的标签冲掉。
+
+踩过的编译坑：
+- `EAssetRegistryTagsCaller` 的定义在 `UObject/AssetRegistryTagsContext.h`（`AssetData.h` 里只有前向声明）⇒ C2027。
+- `UE::UserAssetTags::GetUATPrefixedTag` / `RemoveUserAssetTag` **没导出** ⇒ LNK2019；
+  自己用头里的 inline 常量拼：`FString::Printf(TEXT("%s%s"), *UE::UserAssetTags::UAT_METADATA_PREFIX, *Tag)`；
+  删标签直接用 `Package->GetMetaData().RootMetaDataMap.Remove(...)`。
