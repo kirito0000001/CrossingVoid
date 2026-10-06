@@ -985,3 +985,41 @@ PaperZD 的预览**确实会触发通知**，卡在 OwningInstance 上：
 没有就是没找到预览播放器（检查 PaperZD 模块是否加载、预览视口是否在实时渲染）。
 旧版 DLL 上的临时绕过：在序列编辑器里切到另一个 AnimSequence 再切回来，会重建通知表。
 
+---
+
+## 19. Content Browser 右键：从 Flipbook 一键建特效（2026-10-06）
+
+**入口**：在 Content Browser 里右键一个 **Paper Flipbook** → 菜单**最前面**的 `AtlasFX` 分区里两项：
+「创建 AtlasFX 特效（精灵渲染器）」/「创建 AtlasFX 特效（网格渲染器）」。
+
+**定案（用户 2026-10-06 拍板）**：
+1. 只挂 **Flipbook**（不做 Sprite、不做图集源文件）—— DI 吃的是 Flipbook，Sprite 那条要额外造 Flipbook，先不做；
+2. 分区放**最前面**（Flipbook 本来没有别的插件分区，不挤别人）；
+3. 生成到**同目录**，命名 `NS_<Flipbook名>_Sprite` / `_Mesh`（重名由 `DuplicateAsset` 自动加后缀）；
+4. **多选时每个 Flipbook 各生成一个**系统（选中项里混了别的资产时只处理其中的 Flipbook）；
+5. **只管自己**：不顺手创建 PaperZD 动画序列（ZDBridge 那边有 `CreatePaperZDSequence`，需要时另外接）。
+
+**实现**（`Plugins/AtlasFX/Source/AtlasFXEditor/Private/AtlasFXFlipbookActions.cpp`）：
+- 挂菜单：`UE::ContentBrowser::ExtendToolMenu_AssetContextMenu(UPaperFlipbook::StaticClass())` +
+  `Menu->AddSection(..., FToolMenuInsert(NAME_None, EToolMenuInsertType::First))` +
+  `AddDynamicEntry`；分区按 `FToolMenuOwnerScoped(OwnerName)` 归属，Shutdown 时
+  `UnregisterOwnerByName` 一次清掉。注册走 `UToolMenus::RegisterStartupCallback`（菜单系统可能还没建好）。
+  参考实现：`Plugins/DreamFX/Source/DreamFXEditor/Private/UI/DreamFXMenus.cpp:359-375`。
+- 选中项：`UContentBrowserAssetContextMenuContext::FindContextWithAssets(InSection)` → `SelectedAssets`。
+- 找 DI：`System->GetExposedParameters().GetDataInterfaces()` 里 `Cast<UNiagaraDataInterfaceSpriteAtlas>`
+  —— **按类型找不按名字**，与 `AtlasFXSetupCommandlet.cpp:361-375` 同一套判据。
+- 接图集：`Atlas->Flipbook = <右键那个>; Atlas->RefreshFromSource();` 然后**存盘**
+  （帧表烘在资产里，不存盘下次打开还是空的），最后 `GEditor->SyncBrowserToObjects`。
+- **安全闸**：复制出来的系统若与模板**共用同一个 DI 实例**（说明复制没深拷 DI），直接报错跳过，
+  绝不改模板 —— 宁可少建一个也不要污染模板。
+
+**构建上踩到的两件事**（都已修）：
+- `UNiagaraDataInterfaceSpriteAtlas` 是 `MinimalAPI`（只导出反射），编辑器模块要直接调
+  `RefreshFromSource()` 就必须给它加 `ATLASFX_API`，否则 `LNK2019`；
+- `AtlasFXEditor.Build.cs` 补依赖：`Paper2D` / `ToolMenus` / `ContentBrowser` / `AssetTools` /
+  `Slate`（`FUIAction`、`FSlateNotificationManager`）/ `SlateCore`（`FSlateIcon`）。
+
+**验证状态**：编译通过、`-run=AtlasFXSetup` 无头跑通（模块加载/卸载干净，无 Error）；
+**菜单本身要在编辑器里肉眼确认**（右键 Flipbook 看有没有 AtlasFX 分区、生成后 DI 的 Flipbook 与帧表对不对）。
+
+
