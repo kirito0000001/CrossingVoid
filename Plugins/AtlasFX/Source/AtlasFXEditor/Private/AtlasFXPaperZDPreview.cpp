@@ -320,13 +320,6 @@ namespace
 			return;
 		}
 
-		// 循环播放或来回拖时间轴时，同一条通知会反复触发：先收掉上一次的。
-		if (UNiagaraComponent* Previous = NotifyState.SpawnedComponent.Get())
-		{
-			Previous->DestroyComponent();
-			NotifyState.SpawnedComponent = nullptr;
-		}
-
 		const FVector Offset = GetVectorProperty(Notify, TEXT("Offset"), FVector::ZeroVector);
 		const FRotator Rotation = GetRotatorProperty(Notify, TEXT("Rotation"), FRotator::ZeroRotator);
 		const bool bNotAttach = GetBoolProperty(Notify, TEXT("NotAttach"), false);
@@ -342,17 +335,52 @@ namespace
 		const float Sign = bFirstPerson ? 1.0f : -1.0f;
 		const FVector SignedOffset(Offset.X * Sign, Offset.Y * Sign, Offset.Z);
 
+		// 循环播放 / 来回拖时间轴 / 紧接着再播一次：同一条通知会反复触发。
+		// 这里**优先复用上一次的组件并重置它**（`Activate(bReset=true)` 把上一轮还没死掉的粒子清干净，
+		// 再从第 0 帧重播），而不是"销毁再新建"：
+		//   * 特效粒子寿命常常比序列长，销毁+新建的那一帧里旧粒子还在，看起来就像"第二次不显示了"；
+		//   * 世界生成那条路以前用池化（AutoRelease），复用回来的组件未必会自己重新激活。
+		if (UNiagaraComponent* Previous = NotifyState.SpawnedComponent.Get())
+		{
+			if (Previous->GetAsset() == System)
+			{
+				if (bNotAttach)
+				{
+					Previous->SetWorldLocationAndRotation(AttachRoot->GetComponentLocation() + SignedOffset, Rotation);
+					Previous->SetWorldScale3D(Scale);
+				}
+				else
+				{
+					Previous->SetRelativeLocationAndRotation(Offset, Rotation);
+					Previous->SetRelativeScale3D(Scale);
+				}
+
+				Previous->Activate(/*bReset=*/true);
+
+				UE_LOG(LogAtlasFXPreview, Log,
+					TEXT("预览重置特效：%s（通知 %s，时间 %.3f 秒，复用组件 %s，已清掉上一轮的粒子）"),
+					*System->GetName(), *Notify->GetClass()->GetName(), Notify->Time, *Previous->GetName());
+				return;
+			}
+
+			// 通知上的 Niagara 资产换了：旧的收掉，走下面的新建。
+			Previous->DestroyComponent();
+			NotifyState.SpawnedComponent = nullptr;
+		}
+
 		UNiagaraComponent* Spawned = nullptr;
 		if (bNotAttach)
 		{
-			// 蓝图：Spawn System at Location（世界位置 + 偏移，Scale 直接给，池 = AutoRelease）。
+			// 蓝图：Spawn System at Location（世界位置 + 偏移，Scale 直接给）。
 			// 世界位置取的是**挂点**（替身 = 游戏里的角色根组件），不是翻转书本身。
+			// 池化用 None：这条路的组件由我们自己复用/销毁（见上面的"复用并重置"分支），
+			// 交给池子会出现"复用回来但没重新激活"的组件。
 			Spawned = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
 				World, System,
 				AttachRoot->GetComponentLocation() + SignedOffset,
 				Rotation,
 				Scale,
-				true, true, ENCPoolMethod::AutoRelease, true);
+				true, true, ENCPoolMethod::None, true);
 		}
 		else
 		{
