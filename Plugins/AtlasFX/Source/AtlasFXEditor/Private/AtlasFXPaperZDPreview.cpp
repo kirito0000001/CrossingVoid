@@ -94,6 +94,9 @@ namespace
 		float LastPlaybackTime = 0.0f;
 		TArray<FNotifyRuntimeState> NotifyStates;
 
+		/** 上一帧播放器在不在播放。暂停 → 播放的那一下等价于游戏里新建 playback handle，要清上升沿状态。 */
+		bool bWasPlayingLastFrame = false;
+
 		/** 上一次「一条通知都没认出来」时补扫的时间戳（FPlatformTime::Seconds），用来限流。 */
 		double LastNotifyRescanTime = 0.0;
 
@@ -536,6 +539,28 @@ namespace
 		const float LastPlaybackTime = State.LastPlaybackTime;
 		const float DeltaTime = Playtime - LastPlaybackTime;
 		State.LastPlaybackTime = Playtime;
+
+		// 暂停 / 没在播放的帧**不参与判定**。否则时间停在 0 的那些帧里，「第 0 帧的通知」会被算成已激活
+		// （PaperZD 的判据在 DeltaTime <= 0 那一支是 Playtime <= Time && LastPlaybackTime >= Time，0 <= 0 成立）
+		// ⇒ 真正按下播放时反而没有上升沿 ⇒ 第 0 帧的通知永远不触发。
+		// 游戏里不会这样：一开播就是新的 playback handle，上升沿状态是干净的。
+		const bool bIsPlaying = Player->IsPlaying();
+
+		// 暂停 → 播放：等价于游戏里新建 handle，把上升沿状态清零，从 0 重播时第 0 帧的通知能再触发。
+		if (bIsPlaying && !State.bWasPlayingLastFrame)
+		{
+			for (FNotifyRuntimeState& NotifyState : State.NotifyStates)
+			{
+				NotifyState.bWasActiveLastFrame = false;
+			}
+		}
+		State.bWasPlayingLastFrame = bIsPlaying;
+
+		// 时间没动就什么都不判（拖时间轴和播放都会让时间动，所以不会漏事件）。
+		if (FMath::IsNearlyZero(DeltaTime))
+		{
+			return;
+		}
 
 		for (FNotifyRuntimeState& NotifyState : State.NotifyStates)
 		{

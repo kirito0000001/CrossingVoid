@@ -969,6 +969,14 @@ PaperZD 的预览**确实会触发通知**，卡在 OwningInstance 上：
   对 `TxSpawn`（挂角色根组件）的正确竖直对齐公式：
   `Offset.Z = 精灵组件相对 Z − 轴心到脚底距离 × 精灵组件缩放`（Misaka：`40 − 257 × 0.5 = −88.5 cm`）。
   网格轴心在**底边中点**，所以 `Offset.Z` 与 `Scale` 无关（缩放绕轴心做，底边不动）。
+* **第 0 帧的通知不触发（2026-10-06 用户报的 bug）**：通知挂在 `Time = 0` 时，按播放看不到特效。
+  原因不是 PaperZD，是预览**把暂停的帧也算进去了**：时间停在 0 的那些帧走 PaperZD 判据的
+  `DeltaTime <= 0` 那一支（`Playtime <= Time && LastPlaybackTime >= Time`，`0 <= 0` 成立）⇒
+  通知被判成「已激活」⇒ 真按播放时没有上升沿 ⇒ 永远不触发。游戏里不会踩：一开播就是新的
+  playback handle，`bPersistentActiveState` 从 false 开始。修法两条（`UpdatePlayer`）：
+  ① `FMath::IsNearlyZero(DeltaTime)` 的帧直接 return，不参与判定；
+  ② 记 `bWasPlayingLastFrame`，**暂停 → 播放**的那一下把所有 `bWasActiveLastFrame` 清零，
+  等价于游戏里新建 handle（于是从 0 重播也能再触发）。
 * **镜像只发生在 NotAttach 那一支**：蓝图里 `SpawnSystemAtLocation` 的位置是
   `GetWorldLocation(Comp) + (Owner.Tags 含 "1P" ? Offset : -Offset)`，而挂点那一支直接用 `Offset`。
   预览的渲染组件没有 Owner（没有标签）⇒ 走 `-Offset` 那一支，与游戏里的普通角色一致。
