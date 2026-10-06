@@ -98,9 +98,10 @@ public:
 
 	// ------------------------------------------------------------------ 接口
 
-	/** 从 Flipbook / 手工数据重烘帧表。编辑器详情面板上是个按钮；Python 里 `refresh_from_source()`。 */
+	/** 从 Flipbook / 手工数据重烘帧表。编辑器详情面板上是个按钮；Python 里 `refresh_from_source()`。
+	 *  ATLASFX_API：类本身是 MinimalAPI（只导出反射），而 Content Browser 的右键菜单要直接调这个函数。 */
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "图集", meta = (DisplayName = "重烘帧表（Refresh From Source）"))
-	void RefreshFromSource();
+	ATLASFX_API void RefreshFromSource();
 
 	// ~UObject
 	virtual void PostInitProperties() override;
