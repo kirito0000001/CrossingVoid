@@ -1094,4 +1094,26 @@ PaperZD 的预览**确实会触发通知**，卡在 OwningInstance 上：
 **相关文本源**：`DFX/Modules/M_SpriteAtlasSize.dfm` 的文件头、`DFX/Templates/NS_Atlas2D_Mesh.dfs` 的
 MeshRenderer 段注释都改成了「轴心在几何中心」，并写明"不要再加 Z 补偿"（改的是注释，不影响构建产物）。
 
+### 20.1 对齐量加在哪一层（同日定案）
+
+`Particles.Scale` **只缩放渲染出来的网格几何，不动粒子位置**，所以：
+
+* 挪**面片原点** / `PivotOffsetSpace = Mesh` —— 局部单位，**会被 Scale 放大**
+  （网格模板默认配置下 `Scale.z = 320/64 = 5`：局部 40 cm ⇒ 世界 200 cm），
+  而且每个系统的 `SizeScale` 不同、放大倍数也不同 ⇒ 补偿量随系统漂移，**死路**；
+* 加在 **`Particles.Position`（Spawn 阶段）** —— **世界单位，永远不被放大**，一个数就是一个数；
+* 渲染器的 `PivotOffset` + `PivotOffsetSpace = Simulation/World` 也是世界单位，但引擎 5.8 已把它挪进
+  「每个网格一项」的结构（`FNiagaraMeshRendererMeshProperties::PivotOffset`，旧的
+  `PivotOffset_DEPRECATED` 仍在头文件里），DreamFX 的 `.dfs` 写不进去，只能手点资产。
+
+**定案**：网格模板的 `ParticleSpawn` 末尾调用新模块 `Atlas_Mesh_Offset`
+（`DFX/Modules/M_AtlasMeshOffset.dfm` ⇒ `/AtlasFX/Modules/Atlas_Mesh_Offset`），
+**默认 `Offset = (0, 0, 40)`**（角色精灵组件在 Z = +40 —— Misaka 蓝图的 Sprite 相对位置；
+网格特效跟着抬才与精灵那套对齐）。每个系统可以在模块栈里改那次调用的输入。
+
+⚠️ 两条必须记住：
+
+* **只放 Spawn**：位置逐帧累积，放 `ParticleUpdate` 会越跑越远；
+* **存量系统注意叠加**：若某系统的通知 `Offset` 里已经算过这 40，把模块里的 Z 改回 `0`，否则变 80。
+
 

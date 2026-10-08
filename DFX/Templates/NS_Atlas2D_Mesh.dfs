@@ -93,6 +93,15 @@ System(Name="Templates/NS_Atlas2D_Mesh", Root="Plugin.AtlasFX")
             // 必须紧跟 InitializeParticle：寿命要在粒子出生的那一帧定下来
             // （Play_Sprite_Atlas 是 ParticleUpdate，那时候改 Lifetime 只会让年龄跳变）。
             Sprite_Atlas_Duration(Atlas = User.Atlas);
+
+            // 网格特效默认整体抬 40（**世界单位**）：角色精灵组件在 Z = +40（Misaka 蓝图的 Sprite），
+            // 网格特效跟着抬才和精灵那套对齐（2026-10-06 用户定）。
+            // 加在**粒子位置**上 ⇒ 不受 Particles.Scale 放大（挪面片原点会被放大，是死路：
+            // 模板默认配置下 Scale = 5，局部 40 变世界 200，而且每个系统的 SizeScale 还不一样）。
+            // 要调 / 要关：直接改这里的 Offset；某个系统的通知 Offset 里已经算过这 40 的话，
+            // 把它改成 (0.0, 0.0, 0.0)，否则会叠加成 80。
+            // ⚠️ 必须留在 ParticleSpawn（位置逐帧累积，放 ParticleUpdate 会越跑越远）。
+            Atlas_Mesh_Offset(Offset = (0.0, 0.0, 40.0));
         }
 
         ParticleUpdate = {
