@@ -16,6 +16,7 @@
 #include "NiagaraSystem.h"
 #include "Notifies/PaperZDAnimNotify.h"
 #include "Notifies/PaperZDAnimNotify_Base.h"
+#include "Templates/TypeHash.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/UnrealType.h"
 
@@ -86,6 +87,9 @@ namespace
 
 		/** 上一次为该通知生成的特效，重新触发时先收掉，免得拖时间轴拖出一堆。 */
 		TWeakObjectPtr<UNiagaraComponent> SpawnedComponent;
+
+		/** 「这条通知还没挂 Niagara 系统」只提示一次，免得每圈刷屏。 */
+		bool bWarnedNoSystem = false;
 	};
 
 	/** 单个预览播放器的运行期状态。 */
@@ -108,6 +112,9 @@ namespace
 
 		/** 这条序列是不是已经把「一条都没认出来」的逐条诊断打过一次了，免得刷屏。 */
 		bool bDumpedNotifyDiagnostics = false;
+
+		/** 建表时序列里有哪些通知（数量 + 名字 + 是否被忽略）。变了就说明表过期，要重建。 */
+		uint32 NotifyTableSignature = 0;
 	};
 
 	TArray<FPreviewPlayerState> PlayerStates;
@@ -297,13 +304,26 @@ namespace
 	void SpawnForNotify(FPreviewPlayerState& State, FNotifyRuntimeState& NotifyState, const UPaperZDAnimNotify_Base* Notify, UPrimitiveComponent* RenderComponent)
 	{
 		UNiagaraSystem* System = GetNotifySystem(Notify);
-		UWorld* World = RenderComponent ? RenderComponent->GetWorld() : nullptr;
-		if (!System || !World)
+		if (!System)
 		{
-			UE_LOG(LogAtlasFXPreview, Warning, TEXT("通知 %s 到点了但生成不了：Niagara 系统 = %s，世界 = %s"),
+			// 这条通知还没挂 Niagara 系统。表里留着它是有意的（见 RebuildNotifyStates 里的注释）：
+			// 挂上系统后，下一次到点就会生成，不需要重建表。只提示一次，免得循环播放每圈刷屏。
+			if (!NotifyState.bWarnedNoSystem)
+			{
+				NotifyState.bWarnedNoSystem = true;
+				UE_LOG(LogAtlasFXPreview, Log,
+					TEXT("通知 %s 到点了，但它还没挂 Niagara 系统，跳过（挂上之后下次到点就会生成）。"),
+					*Notify->GetClass()->GetName());
+			}
+			return;
+		}
+
+		UWorld* World = RenderComponent ? RenderComponent->GetWorld() : nullptr;
+		if (!World)
+		{
+			UE_LOG(LogAtlasFXPreview, Warning, TEXT("通知 %s 到点了但生成不了：拿不到预览世界（渲染组件 = %s）"),
 				*Notify->GetClass()->GetName(),
-				System ? *System->GetName() : TEXT("<空>"),
-				World ? TEXT("有") : TEXT("<空>"));
+				RenderComponent ? *RenderComponent->GetName() : TEXT("<空>"));
 			return;
 		}
 
@@ -455,6 +475,30 @@ namespace
 		}
 	}
 
+	/**
+	 * 通知表的签名：序列里的通知数量 + 每个通知的名字 + 是否被忽略。
+	 *
+	 * 用来发现「表过期了」—— 序列编辑时加通知 / 删通知 / 换通知资产都会变，于是不必再靠
+	 * 「切到别的 AnimSequence 再切回来」强制重建。故意**不含**通知上挂的 Niagara 系统：
+	 * 系统是到点时现读的，换系统不需要重建表（重建会把正在播的特效一起收掉）。
+	 */
+	uint32 ComputeNotifyTableSignature(const UPaperZDAnimSequence* Sequence)
+	{
+		if (!Sequence)
+		{
+			return 0;
+		}
+
+		const TArray<UPaperZDAnimNotify_Base*>& Notifies = Sequence->GetAnimNotifies();
+		uint32 Hash = GetTypeHash(Notifies.Num());
+		for (const UPaperZDAnimNotify_Base* Notify : Notifies)
+		{
+			Hash = HashCombine(Hash, GetTypeHash(Notify ? Notify->GetFName() : NAME_None));
+			Hash = HashCombine(Hash, GetTypeHash(Notify != nullptr && ShouldIgnoreNotify(Notify)));
+		}
+		return Hash;
+	}
+
 	/** 换序列时重建通知表。这一帧不触发任何通知，免得一进去就炸一堆。 */
 	void RebuildNotifyStates(FPreviewPlayerState& State, const UPaperZDAnimSequence* Sequence)
 	{
@@ -477,18 +521,17 @@ namespace
 				continue;
 			}
 
-			// 没挂 Niagara 系统的通知（语音、屏幕震动之类）不掺和。
-			if (!GetNotifySystem(Notify))
-			{
-				continue;
-			}
-
+			// **这里不再过滤「还没挂 Niagara 系统」的通知**。
+			// 以前过滤掉，于是「先建通知、后挂系统」的那种通知进不了表，只能切到别的序列再切回来才生效
+			//（DESIGN §18.5 那条土办法）。现在系统是**到点时现读**的，挂上就能用。
 			FNotifyRuntimeState NotifyState;
 			NotifyState.Notify = Notify;
 			State.NotifyStates.Add(MoveTemp(NotifyState));
 		}
 
-		UE_LOG(LogAtlasFXPreview, Log, TEXT("跟踪预览序列 %s：%d 条通知会生成特效（序列上共 %d 条）。"),
+		State.NotifyTableSignature = ComputeNotifyTableSignature(Sequence);
+
+		UE_LOG(LogAtlasFXPreview, Log, TEXT("跟踪预览序列 %s：%d 条通知在跟踪名单里（序列上共 %d 条）。"),
 			*Sequence->GetName(), State.NotifyStates.Num(), Sequence->GetAnimNotifies().Num());
 
 		// 序列上明明有通知、却一条都没认出来 —— 逐条打印原因，每条序列只打一次。
@@ -520,6 +563,23 @@ namespace
 		const FString SequencePath = Sequence ? Sequence->GetPathName() : FString();
 		if (SequencePath != State.SequencePath)
 		{
+			State.bDumpedNotifyDiagnostics = false;
+			RebuildNotifyStates(State, Sequence);
+			return;
+		}
+
+		// 表也可能过期，两种情况都要重建：
+		//   ① 序列上加了 / 删了通知，或者换了通知资产（签名变了）；
+		//   ② 表里跟踪的通知对象**已经失效** —— 保存通知蓝图会触发蓝图重编（reinstance），
+		//      旧实例被换成新对象，弱指针就全废了：症状是「保存之后预览反而不出特效」，
+		//      以前只能切到别的序列再切回来（重建表）才恢复。
+		const bool bHasDeadNotify = State.NotifyStates.ContainsByPredicate(
+			[](const FNotifyRuntimeState& NotifyState) { return !NotifyState.Notify.IsValid(); });
+		if (bHasDeadNotify || ComputeNotifyTableSignature(Sequence) != State.NotifyTableSignature)
+		{
+			UE_LOG(LogAtlasFXPreview, Log, TEXT("预览序列 %s 的通知表过期了（%s），重建。"),
+				Sequence ? *Sequence->GetName() : TEXT("<空>"),
+				bHasDeadNotify ? TEXT("跟踪的通知对象已失效") : TEXT("通知列表变了"));
 			State.bDumpedNotifyDiagnostics = false;
 			RebuildNotifyStates(State, Sequence);
 			return;
