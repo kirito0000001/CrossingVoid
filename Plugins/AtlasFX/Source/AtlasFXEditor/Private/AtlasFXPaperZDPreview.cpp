@@ -30,7 +30,7 @@ static TAutoConsoleVariable<int32> CVarAtlasFXPreviewFX(
 static TAutoConsoleVariable<int32> CVarAtlasFXPreviewMimicGame(
 	TEXT("AtlasFX.PaperZD.MimicGame"),
 	1,
-	TEXT("1 = 预览按游戏里的组件变换摆角色（精灵缩放 0.5、相对 Z +40），特效挂到与游戏根组件等价的替身上（默认）；0 = 原样显示。"),
+	TEXT("1 = 预览按游戏里的组件变换摆角色（精灵缩放 0.5、相对 Z +40），特效按游戏里「挂在角色根组件上」的位置与缩放折算（默认）；0 = 原样显示。"),
 	ECVF_Default);
 
 static TAutoConsoleVariable<float> CVarAtlasFXPreviewSpriteScale(
@@ -51,9 +51,9 @@ static TAutoConsoleVariable<float> CVarAtlasFXPreviewSpriteZ(
 //   预览：PaperZD 自己建的翻转书是 **1:1 + 原点** ⇒ 角色 5.14 m ⇒ 在预览里看着正好的尺寸，
 //         到游戏里就「2 倍超出」（用户实测）。两边的差不是「挂点差 2.57 m」那么单一，
 //         而是**缩放 + 偏移一起**造成的。
-// ⇒ 预览改为：翻转书按 (0,0,+40) × 0.5 摆（画面与游戏一致），并在它下面挂一个**根组件替身**
-//   （相对 (0,0,-40/0.5 = -80)、相对缩放 1/0.5 = 2 ⇒ 世界变换 = 游戏里的根组件：
-//   原点在脚底、世界缩放 1），特效一律挂到替身上 ⇒ 位置与尺寸都与游戏一致。
+// ⇒ 预览改为：翻转书按 (0,0,+40) × 0.5 摆（画面与游戏一致）。特效**挂在翻转书上**，但相对变换按
+//   「挂在游戏里那个根组件（缩放 1、原点在脚底）上」折算过去 —— 根组件相对翻转书是
+//   S(1/0.5 = 2) ∘ T(0,0,-40/0.5 = -80)（见 GetRootLocalToFlipbook）⇒ 位置与尺寸都与游戏一致。
 //   这三个数来自用户：0.5 缩放与 +40 偏移是**全角色统一**的（改不了，所以让预览来适配它们）。
 //
 // 这里曾经挂过两个补偿，记下来免得再走一遍：
@@ -63,7 +63,13 @@ static TAutoConsoleVariable<float> CVarAtlasFXPreviewSpriteZ(
 //      （**游戏里也一样是一条缝**），模板已改回 0，见 DFX/Modules/M_SpriteAtlasSize.dfm。
 //   ② AtlasFX.PaperZD.FootAlign（曾默认 1）：用「精灵底边相对翻转书原点的 Z」把特效压到脚底。
 //      它只在「预览保持 1:1」的前提下成立，且把**缩放差**整个漏掉了（那次「预览对、游戏错」就是它）；
-//      换成替身方案后世界坐标本来就对，已删除。见 DESIGN.md §18.4。
+//      折算方案下世界坐标本来就对，已删除。见 DESIGN.md §18.4。
+//
+//   ③ 曾经真的 NewObject 一个 **USceneComponent 替身**挂到翻转书下面（承载上面的折算），
+//      但它是注册在预览世界里的组件：预览世界先于它销毁时，引擎会在 FScene::Release() 里
+//      ensure（RendererScene.cpp:4337「Component Name: SceneComponent /Engine/Transient.
+//      PaperFlipbookComponent_0 … Component Asset: None」）。现在折算纯用数学（GetRootLocalToFlipbook），
+//      不引入任何额外组件，这条 ensure 就没了。
 
 namespace
 {
@@ -102,9 +108,6 @@ namespace
 
 		/** 这条序列是不是已经把「一条都没认出来」的逐条诊断打过一次了，免得刷屏。 */
 		bool bDumpedNotifyDiagnostics = false;
-
-		/** 与游戏角色根组件等价的那个替身（见文件头注释），特效都挂在它下面。 */
-		TWeakObjectPtr<USceneComponent> RootStandIn;
 	};
 
 	TArray<FPreviewPlayerState> PlayerStates;
@@ -138,44 +141,32 @@ namespace
 	}
 
 	/**
-	 * 取（必要时新建）与游戏角色根组件等价的替身：挂在翻转书下面，
-	 * 相对位置 (0,0,-Z/Scale)、相对缩放 1/Scale ⇒ 世界变换 = 游戏里那个根组件。
-	 * 关掉 MimicGame 时直接返回翻转书本身（退回旧行为）。
+	 * 「游戏里的角色根组件」相对翻转书的变换 —— 纯数学，不造任何组件。
+	 *
+	 * 预览把翻转书摆成了游戏里精灵组件的样子（相对 (0,0,SpriteZ) × SpriteScale），而游戏里特效挂的是
+	 * **角色根组件**（缩放 1、原点在脚底）⇒ 根组件相对翻转书就是 `S(1/SpriteScale) ∘ T(0, 0, -SpriteZ)`。
+	 * 特效仍然挂在翻转书上，只是把「挂在根组件上」的相对变换折算过去。
+	 *
+	 * 为什么不自己造一个"根组件替身"挂上去：那是一个**注册在预览世界里**的组件，预览世界先于它销毁时，
+	 * 引擎会在 `FScene::Release()` 里抛 ensure（`RendererScene.cpp:4337`：
+	 * 「Component Name: SceneComponent /Engine/Transient.PaperFlipbookComponent_0 … Component Asset: None」）。
+	 * 数学等价而且不引入额外组件，就没有这个问题。
 	 */
-	USceneComponent* EnsureRootStandIn(FPreviewPlayerState& State, UPrimitiveComponent* RenderComponent)
+	FTransform GetRootLocalToFlipbook()
 	{
-		if (State.RootStandIn.IsValid())
+		// 关掉「模仿游戏」（AtlasFX.PaperZD.MimicGame 0）时不做任何折算：特效直接挂在翻转书上，
+		// 就是最早的预览行为，方便对照排查。
+		if (CVarAtlasFXPreviewMimicGame.GetValueOnAnyThread() == 0)
 		{
-			return State.RootStandIn.Get();
-		}
-		if (!RenderComponent || CVarAtlasFXPreviewMimicGame.GetValueOnAnyThread() == 0)
-		{
-			return RenderComponent;
-		}
-
-		UWorld* World = RenderComponent->GetWorld();
-		if (!World)
-		{
-			return RenderComponent;
+			return FTransform::Identity;
 		}
 
 		float SpriteScale = 1.0f;
 		float SpriteZ = 0.0f;
 		GetGameSpriteTransform(SpriteScale, SpriteZ);
-
-		USceneComponent* StandIn = NewObject<USceneComponent>(RenderComponent, NAME_None, RF_Transient);
-		StandIn->SetupAttachment(RenderComponent);
-		StandIn->SetRelativeLocation(FVector(0.0f, 0.0f, -SpriteZ / SpriteScale));
-		StandIn->SetRelativeScale3D(FVector(1.0f / SpriteScale));
-		StandIn->RegisterComponentWithWorld(World);
-		State.RootStandIn = StandIn;
-
-		UE_LOG(LogAtlasFXPreview, Log,
-			TEXT("预览根组件替身就位：翻转书按缩放 %.2f / 相对 Z %.1f 摆，替身世界位置 %s、世界缩放 %s（游戏里特效挂在角色根组件上，不继承精灵缩放）。"),
-			SpriteScale, SpriteZ,
-			*StandIn->GetComponentLocation().ToCompactString(),
-			*StandIn->GetComponentScale().ToCompactString());
-		return StandIn;
+		return FTransform(FQuat::Identity,
+			FVector(0.0f, 0.0f, -SpriteZ / SpriteScale),
+			FVector(1.0f / SpriteScale));
 	}
 
 	// ------------------------------------------------------------------
@@ -258,7 +249,7 @@ namespace
 		return bNativePaperZDClass && !NotifyClass->IsChildOf(UBlueprintGeneratedClass::StaticClass());
 	}
 
-	/** 收掉某个玩家身上所有已生成的特效（连根组件替身一起）。 */
+	/** 收掉某个玩家身上所有已生成的特效。 */
 	void DestroySpawnedComponents(FPreviewPlayerState& State)
 	{
 		for (FNotifyRuntimeState& NotifyState : State.NotifyStates)
@@ -269,12 +260,6 @@ namespace
 			}
 			NotifyState.SpawnedComponent = nullptr;
 		}
-
-		if (USceneComponent* StandIn = State.RootStandIn.Get())
-		{
-			StandIn->DestroyComponent();
-		}
-		State.RootStandIn = nullptr;
 	}
 
 	void DestroyAllSpawnedComponents()
@@ -305,12 +290,14 @@ namespace
 	 * 为一条通知生成特效，逐条对齐 TxSpawn 蓝图：
 	 *   TXComp = 人物根组件；NotAttach 为真走世界生成，否则挂到根组件上；
 	 *   位置带「1P 标签翻转」；缩放一律靠 spawn 之后的 SetRelativeScale3D。
+	 *
+	 * 预览里没有角色，所以特效挂在**翻转书**上，用 GetRootLocalToFlipbook() 把「挂在角色根组件上」
+	 * 的相对变换折算过去 —— 位置与缩放都与游戏一致，而且不额外造组件。
 	 */
 	void SpawnForNotify(FPreviewPlayerState& State, FNotifyRuntimeState& NotifyState, const UPaperZDAnimNotify_Base* Notify, UPrimitiveComponent* RenderComponent)
 	{
 		UNiagaraSystem* System = GetNotifySystem(Notify);
-		USceneComponent* AttachRoot = EnsureRootStandIn(State, RenderComponent);
-		UWorld* World = AttachRoot ? AttachRoot->GetWorld() : nullptr;
+		UWorld* World = RenderComponent ? RenderComponent->GetWorld() : nullptr;
 		if (!System || !World)
 		{
 			UE_LOG(LogAtlasFXPreview, Warning, TEXT("通知 %s 到点了但生成不了：Niagara 系统 = %s，世界 = %s"),
@@ -335,6 +322,14 @@ namespace
 		const float Sign = bFirstPerson ? 1.0f : -1.0f;
 		const FVector SignedOffset(Offset.X * Sign, Offset.Y * Sign, Offset.Z);
 
+		// 折算：特效相对**角色根组件**的变换（游戏里就是这样挂的）→ 相对**翻转书**的变换。
+		const FTransform RootLocalToFlipbook = GetRootLocalToFlipbook();
+		const FTransform RelativeToRoot(FQuat(Rotation), Offset, Scale);
+		const FTransform RelativeToFlipbook = RelativeToRoot * RootLocalToFlipbook;
+
+		// 世界生成那条路要的是「游戏里根组件」的世界变换（根组件是翻转书的子级，见 GetRootLocalToFlipbook）。
+		const FTransform RootToWorld = RootLocalToFlipbook * RenderComponent->GetComponentTransform();
+
 		// 循环播放 / 来回拖时间轴 / 紧接着再播一次：同一条通知会反复触发。
 		// 这里**优先复用上一次的组件并重置它**（`Activate(bReset=true)` 把上一轮还没死掉的粒子清干净，
 		// 再从第 0 帧重播），而不是"销毁再新建"：
@@ -342,17 +337,17 @@ namespace
 		//   * 世界生成那条路以前用池化（AutoRelease），复用回来的组件未必会自己重新激活。
 		if (UNiagaraComponent* Previous = NotifyState.SpawnedComponent.Get())
 		{
-			if (Previous->GetAsset() == System)
+			if (Previous->GetAsset() == System && Previous->GetWorld() == World)
 			{
 				if (bNotAttach)
 				{
-					Previous->SetWorldLocationAndRotation(AttachRoot->GetComponentLocation() + SignedOffset, Rotation);
+					Previous->SetWorldLocationAndRotation(RootToWorld.GetLocation() + SignedOffset, Rotation);
 					Previous->SetWorldScale3D(Scale);
 				}
 				else
 				{
-					Previous->SetRelativeLocationAndRotation(Offset, Rotation);
-					Previous->SetRelativeScale3D(Scale);
+					Previous->SetRelativeLocationAndRotation(RelativeToFlipbook.GetLocation(), RelativeToFlipbook.Rotator());
+					Previous->SetRelativeScale3D(RelativeToFlipbook.GetScale3D());
 				}
 
 				Previous->Activate(/*bReset=*/true);
@@ -372,28 +367,27 @@ namespace
 		if (bNotAttach)
 		{
 			// 蓝图：Spawn System at Location（世界位置 + 偏移，Scale 直接给）。
-			// 世界位置取的是**挂点**（替身 = 游戏里的角色根组件），不是翻转书本身。
+			// 世界位置取的是**根组件**的世界位置（不是翻转书本身）。
 			// 池化用 None：这条路的组件由我们自己复用/销毁（见上面的"复用并重置"分支），
 			// 交给池子会出现"复用回来但没重新激活"的组件。
 			Spawned = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
 				World, System,
-				AttachRoot->GetComponentLocation() + SignedOffset,
+				RootToWorld.GetLocation() + SignedOffset,
 				Rotation,
 				Scale,
 				true, true, ENCPoolMethod::None, true);
 		}
 		else
 		{
-			// 蓝图：Spawn System Attached —— Location 用的是**没动过的 Offset**
+			// 蓝图：Spawn System Attached —— 挂点这一支的 Location 用的是**没动过的 Offset**
 			// （蓝图里挂点这一支不做镜像，镜像只出现在 NotAttach 的「计算真正位置」里）。
-			// 挂点是替身（世界变换 = 游戏里的根组件），所以这里不需要任何位置补偿。
+			// 这里挂的是翻转书，所以位置/旋转用折算后的 RelativeToFlipbook。
 			// Location Type 与蓝图一致：Snap to Target, Including Scale（没传 Scale 时它与
 			// KeepRelativeOffset 在引擎里等价，见 NiagaraFunctionLibrary.cpp:254-281）。
-			// 注意这个函数**没有 Scale 参数**，蓝图也是靠随后那句 SetRelativeScale3D 定缩放的，
-			// 别把 scale 塞进 spawn。
+			// 注意这个函数**没有 Scale 参数**，缩放靠随后那句 SetRelativeScale3D —— 传折算后的相对缩放。
 			Spawned = UNiagaraFunctionLibrary::SpawnSystemAttached(
-				System, AttachRoot, NAME_None,
-				Offset, Rotation,
+				System, RenderComponent, NAME_None,
+				RelativeToFlipbook.GetLocation(), RelativeToFlipbook.Rotator(),
 				EAttachLocation::SnapToTargetIncludingScale,
 				true, true, ENCPoolMethod::None, true);
 		}
@@ -401,13 +395,13 @@ namespace
 		NotifyState.SpawnedComponent = Spawned;
 		if (Spawned)
 		{
-			Spawned->SetRelativeScale3D(Scale);
+			Spawned->SetRelativeScale3D(RelativeToFlipbook.GetScale3D());
 
 			UE_LOG(LogAtlasFXPreview, Log,
 				TEXT("预览生成特效：%s（通知 %s，时间 %.3f 秒，%s，挂点 %s，Offset %s，Rotation %s，Scale %s，组件 %s）"),
 				*System->GetName(), *Notify->GetClass()->GetName(), Notify->Time,
-				bNotAttach ? TEXT("世界生成") : TEXT("挂在挂点上"),
-				*AttachRoot->GetName(),
+				bNotAttach ? TEXT("世界生成") : TEXT("挂在翻转书上"),
+				*RenderComponent->GetName(),
 				*Offset.ToString(), *Rotation.ToString(), *Scale.ToString(), *Spawned->GetName());
 		}
 	}

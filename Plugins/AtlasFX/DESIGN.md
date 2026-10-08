@@ -951,10 +951,19 @@ PaperZD 的预览**确实会触发通知**，卡在 OwningInstance 上：
   与「0.5 缩放和 40 偏移是全角色统一的，那个改不了」）⇒ **只动预览插件**：
   * 预览把翻转书按 `(0,0,+40)` × `0.5` 摆（`AtlasFX.PaperZD.SpriteZ` / `AtlasFX.PaperZD.SpriteScale`）
     ⇒ 画面与游戏一致；
-  * 再在翻转书下面挂一个**根组件替身**：相对 `(0,0,-40/0.5 = -80)`、相对缩放 `1/0.5 = 2`
-    ⇒ 世界变换 = 游戏里的根组件（原点在脚底、世界缩放 1）；特效一律挂到替身上
-    ⇒ 位置与尺寸都与游戏一致，`Offset = 0` 就是脚底。
-  角色 / 蓝图 / 图集 / 现有特效一律不动；替身由 `EnsureRootStandIn()` 造，随预览播放器一起收。
+  * 特效按「挂在游戏里那个根组件（缩放 1、原点在脚底）上」折算位置与缩放
+    ⇒ 位置与尺寸都与游戏一致，`Offset = 0` 就是脚底（折算系数：根组件相对翻转书
+    = `S(1/SpriteScale) ∘ T(0,0,-SpriteZ)`，即相对 `(0,0,-40/0.5 = -80)`、相对缩放 `1/0.5 = 2`）。
+  ⚠ **2026-10-06 修正：替身这个组件已经删掉了，改成纯数学折算**。原因是它是个**注册在预览世界里**
+  的组件，预览世界先于它销毁时引擎会在 `FScene::Release()` 里抛 ensure
+  （`RendererScene.cpp:4337`「Component Name: SceneComponent /Engine/Transient.PaperFlipbookComponent_0 …
+  Component Asset: None」，用户在编辑器里直接看到了这个弹窗）。现在特效仍然挂在**翻转书**上，
+  只用 `GetRootLocalToFlipbook()` 把「挂在角色根组件上」的相对变换折算过去：
+  根组件相对翻转书 = `S(1/SpriteScale) ∘ T(0,0,-SpriteZ)` ⇒ 挂点位置 `RelativeToRoot * 该变换`、
+  相对缩放 `Scale / SpriteScale`；世界生成那条路用 `RootToWorld = 该变换 * 翻转书世界变换`。
+  数值等价（Misaka `Offset.Z = -88.5` ⇒ 世界 Z 还是 `-88.5`），但不引入任何额外组件，ensure 消失。
+  关掉 `AtlasFX.PaperZD.MimicGame` 时 `GetRootLocalToFlipbook()` 返回单位变换 = 特效直接挂翻转书。
+  角色 / 蓝图 / 图集 / 现有特效一律不动。
   ⚠ 曾经的 `AtlasFX.PaperZD.FootAlign`（默认 1，已删）只补了「挂点差」、**漏掉了缩放差** ——
   它让预览对上了、游戏却错得更明显；别再走「单点补偿」的思路，要补就补整套坐标。
   ⚠ 更早那版用**当前帧**包围盒算脚底，值随帧/随序列乱跳（-257 / -300 / -261 / -279 cm），也别再走。
