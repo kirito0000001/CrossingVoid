@@ -545,7 +545,10 @@ bool UAtlasFXSetupCommandlet::SeedRendererMaterialParameters()
 			SeededCount += SeededForRenderer;
 		}
 
-		if (SeededCount > 0 && SaveAssetPackage(Package, System, *TargetPackage) == false)
+		// 存盘条件不只是「这次补了绑定」：还要覆盖**加载时自动重烘**把包标脏的情况。
+		// （DI 的 PostLoad 发现签名过期/结果残缺就会重烘 + MarkPackageDirty；命令工具退出时
+		//  未保存的脏包会被直接丢掉 ⇒ 症状是「必须先打开一次特效，别处才显示」。）
+		if ((SeededCount > 0 || Package->IsDirty()) && SaveAssetPackage(Package, System, *TargetPackage) == false)
 		{
 			bOk = false;
 			continue;
@@ -557,8 +560,9 @@ bool UAtlasFXSetupCommandlet::SeedRendererMaterialParameters()
 		}
 
 		UE_LOG(LogAtlasFXSetup, Display,
-			TEXT("渲染器材质参数：%s 补了 %d 项（Sheet 纹理槽 + Sheet ← %s.ResolvedTexture 属性绑定；已有的跳过）"),
-			*ObjectPath, SeededCount, DiParameterName.IsNone() ? TEXT("<无 DI>") : *DiParameterName.ToString());
+			TEXT("渲染器材质参数：%s 补了 %d 项（Sheet 纹理槽 + Sheet ← %s.ResolvedTexture 属性绑定；已有的跳过）%s"),
+			*ObjectPath, SeededCount, DiParameterName.IsNone() ? TEXT("<无 DI>") : *DiParameterName.ToString(),
+			SeededCount == 0 ? TEXT("；本次没补，但包是脏的（DI 加载时重烘过）⇒ 一起存盘") : TEXT(""));
 	}
 
 	UE_LOG(LogAtlasFXSetup, Display,

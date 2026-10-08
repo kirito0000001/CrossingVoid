@@ -1138,4 +1138,22 @@ UnrealEditor-Cmd.exe CrossingVoid.uproject -run=AtlasFXSetup -stdout -unattended
 日志里会逐个系统打印「补了 N 项」，坏的那些是 `补了 2 项`，正常的 `补了 0 项`。
 **规矩：凡是 `dfx.ps1 build` 重建过模板，之后必须跑一次 `-run=AtlasFXSetup`。**
 
+### 20.3 「必须先打开一次特效，别处才显示」——两个洞（2026-10-06 用户报）
+
+查下来是烘表数据持久化的两个洞，都已加固：
+
+1. **签名只描述「源」**。`NeedsRebakeFromSource()` 原来只在
+   `BakedSourceSignature != ComputeSourceSignature()` 时重烘 ⇒ 如果在无头进程（或贴图还没编译好）时
+   烘出了**残缺结果**（`ResolvedTexture = None`、贴图尺寸退化成 1×1），而**源没变** ⇒ 永远不再重烘。
+   现在加了「结果残缺也重烘」的判据：**帧数与 Flipbook 对不上 / `ResolvedTexture` 为空 /
+   `TextureSize ≤ 1`** 三者之一即重烘。烘表算法版本 `v3 → v4`，强制所有资产在下次加载时重烘一次。
+2. **重烘只在内存里，命令工具一退出就丢**。`PostLoad` 重烘后会 `MarkPackageDirty()`，而
+   `-run=AtlasFXSetup` 原来只保存「这次补了绑定」的系统 ⇒ 重烘结果被丢掉。
+   现在改成 `SeededCount > 0 || Package->IsDirty()` 都存盘，日志会写「本次没补，但包是脏的
+   （DI 加载时重烘过）⇒ 一起存盘」。
+
+验证（2026-10-06）：跑一次命令工具，项目日志里 8 个系统打印
+`加载时自动重烘帧表 —— N 帧 / F fps / 画布 928x640 / 贴图 …` 并逐个存盘
+（`Defence` / `Ko-fx1s1` / `Ko-fx2s1` / `Ko-fx3s1` / `Effects1` / `Sk1-fx2` / `Sk2-fx1` / …）。
+
 

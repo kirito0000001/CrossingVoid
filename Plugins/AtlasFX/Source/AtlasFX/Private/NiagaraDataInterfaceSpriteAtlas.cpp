@@ -274,7 +274,9 @@ FString UNiagaraDataInterfaceSpriteAtlas::ComputeSourceSignature() const
 	// 烘表算法版本：改了烘表逻辑就 +1，强制所有资产在下次加载时重烘一次。
 	// （v2 = 贴图尺寸在无 RHI 进程里退回导入尺寸，避免写出 0x0。）
 	// （v3 = 读贴图尺寸前先 BlockOnAnyAsyncBuild，并加「尺寸不得小于帧矩形范围」的保险。）
-	const int32 BakeVersion = 3;
+	// （v4 = NeedsRebakeFromSource 增加「结果残缺就重烘」的判据 —— 修
+	//       「必须先打开一次特效、别处才显示」那类症状。）
+	const int32 BakeVersion = 4;
 
 	FString Signature = FString::Printf(TEXT("v%d|fb:%s|%d|%.4f"),
 		BakeVersion, *Flipbook->GetPathName(), Flipbook->GetNumKeyFrames(), Flipbook->GetFramesPerSecond());
@@ -312,7 +314,33 @@ bool UNiagaraDataInterfaceSpriteAtlas::NeedsRebakeFromSource() const
 		// 没绑 Flipbook：兜底数据就是权威数据，不重烘（重烘反而会把它清空）。
 		return false;
 	}
-	return BakedSourceSignature != ComputeSourceSignature();
+
+	// ① 源变了（换 Flipbook / 改帧率 / 换帧 Sprite …）：签名不一样就重烘。
+	if (BakedSourceSignature != ComputeSourceSignature())
+	{
+		return true;
+	}
+
+	// ② 源没变，但**烘出来的结果本身是残缺的** —— 也要重烘。
+	//
+	// 这不是理论情况：在无头进程 / 贴图还没编译好的时候跑烘表，会写出
+	// `ResolvedTexture = None` 或退化成 1×1 的贴图尺寸。而签名只描述「源」，
+	// 源没变就永远不会再烘 ⇒ 症状正是「这个特效必须先打开一次（重烘/保存一次），
+	// 别的序列/游戏里才显示」（2026-10-06 用户报）。
+	if (FrameRects.Num() != Flipbook->GetNumKeyFrames())
+	{
+		return true;
+	}
+	if (ResolvedTexture == nullptr)
+	{
+		return true;
+	}
+	if (TextureSize.X <= 1 || TextureSize.Y <= 1)
+	{
+		return true;
+	}
+
+	return false;
 #else
 	// 运行时绝不重烘：RefreshFromSource 的 Flipbook 分支整段在 WITH_EDITOR 里，
 	// 非编辑器构建跑一遍会把烘好的表清空。
