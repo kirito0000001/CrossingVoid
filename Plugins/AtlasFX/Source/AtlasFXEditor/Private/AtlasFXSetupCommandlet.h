@@ -44,4 +44,15 @@ private:
 	 * 以及用户实际在用的序列（Misaka 的 DefAtk）里那些通知能不能解析出 Niagara 系统与 Offset/Rotation/Scale/NotAttach。
 	 */
 	void DumpPaperZDPreviewTargets();
+
+	/**
+	 * 可选的收尾动作：`-ReimportMesh=/ZDBridge/FX/FXDefault` —— 从源 FBX 重导一个静态网格，
+	 * 并把重导前后的包围盒中心打出来。
+	 *
+	 * 为什么需要它：网格面片的**轴心**决定网格特效整体偏高还是居中 ——
+	 * 中心 Z = 0 ⇒ 轴心在几何中心（网格版与精灵版的四边形天然对齐）；
+	 * 中心 Z = 高度的一半 ⇒ 轴心在底边（面片从粒子原点往上长，整体高出一截）。
+	 * 命令行重导走的是 FReimportManager，会沿用资产里存的导入设置，比 Python 的 import_asset_tasks 稳。
+	 */
+	void ReimportMeshAsset(const FString& MeshPath);
 };

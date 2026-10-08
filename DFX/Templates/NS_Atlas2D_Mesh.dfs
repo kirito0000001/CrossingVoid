@@ -132,7 +132,11 @@ System(Name="Templates/NS_Atlas2D_Mesh", Root="Plugin.AtlasFX")
         {
             // 用工程自己的面片（ZDBridge 插件里的 FXDefault）而不是引擎自带 Cube。
             // FXDefault 是一张平躺在 X–Z 平面里的面片：**面法线在局部 Y 上**，
-            // 宽沿局部 X（92.8）、高沿局部 Z（64.0），轴心在底边。
+            // 宽沿局部 X（92.8）、高沿局部 Z（64.0）。
+            // 轴心：2026-10-06 起在**几何中心**（FBX 顶点 Z ±0.32 ⇒ 导入后 ±32）。
+            // 在那之前轴心在**底边**（Z 0…64）—— 面片从粒子原点往上长，同一份数据网格版比
+            // 精灵版整体高「画出来高度的一半」（Misaka 那边实测 120 cm）。轴心居中之后两版
+            // 天然对齐，**不要再加任何 Z 补偿**（加了反而偏低）。
             // 本工程 2D 相机沿 Y 轴看（Paper2D 侧视：X 左右、Z 上下、Y 景深），
             // 面片法线正好也在 Y 上 ⇒ **自然朝向就正对镜头**，Sprite_Atlas_Size 传 MeshYaw = 0。
             Meshes     = ["/ZDBridge/FX/FXDefault"];

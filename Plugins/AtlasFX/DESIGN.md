@@ -1066,4 +1066,32 @@ PaperZD 的预览**确实会触发通知**，卡在 OwningInstance 上：
 **验证状态**：编译通过、`-run=AtlasFXSetup` 无头跑通（模块加载/卸载干净，无 Error）；
 **菜单本身要在编辑器里肉眼确认**（右键 Flipbook 看有没有 AtlasFX 分区、生成后 DI 的 Flipbook 与帧表对不对）。
 
+---
+
+## 20. 网格面片的轴心：从底边改到几何中心（2026-10-06）
+
+**背景**：网格渲染器把**粒子位置**放在面片的**轴心**上，而精灵渲染器的四边形是以粒子位置为**中心**的。
+`/ZDBridge/FX/FXDefault` 原来的轴心在**底边**（FBX 顶点 Z `0…0.64`）⇒ 网格版的面片从粒子原点
+往**上**长 ⇒ 同一份图集数据，网格版比精灵版整体高出「画出来高度的一半」（Misaka 实测 **120 cm**）。
+⚠️ 那个数随 `SizeScale` / `FitFrame` 变（模板默认配置下是 **160 cm**），所以**不是**能写死的常数 ——
+一开始想加一个固定的 `-120` 模块，被用户否掉了，改从根上修。
+
+**定案（用户 A 方案：改面片本身，而不是给每个特效加补偿）**：FBX 顶点整体下移 `0.32`，
+其余一概不动（`Lcl Rotation=(-90,0,0)`、`Lcl Scaling=100`、`UnitScaleFactor=1` 都没变，
+两份 FBX 只差 47 字节：`FileId`/`CreationTime` + 4 个顶点的 Z）。
+重导后 `/ZDBridge/FX/FXDefault` 的包围盒 = **中心 (0,0,0)、半尺寸 (46.4, 0, 32)** ⇒ 轴心在**几何中心**，
+网格版与精灵版天然对齐 —— **任何 Z 补偿都不要加**（加了反而偏低）。
+
+**代价（预期内）**：存量网格特效的画面整体下移「各自画出来高度的一半」—— 那正是原来偏高的量，
+所以它们现在才对齐；`/ZDBridge/FX/FXDefault` 如果别处也在用（`Leng刀光` 等），那些同样会下移。
+
+**顺带加的工具**：`-run=AtlasFXSetup -ReimportMesh=/ZDBridge/FX/FXDefault`
+（`AtlasFXSetupCommandlet::ReimportMeshAsset()`）—— 用 `FReimportManager` 重导（沿用资产里存的导入设置），
+并打印重导前后的包围盒中心。判据一句话：**Z 中心 = 0 ⇒ 轴心在几何中心；Z 中心 = 高度/2 ⇒ 在底边**。
+（命令行重导比 Python 的 `import_asset_tasks` 稳：后者试过，能导进去，但命令工具跑在资产注册表扫完之前
+读不到资产、`unreal.log` 也不落盘。）
+
+**相关文本源**：`DFX/Modules/M_SpriteAtlasSize.dfm` 的文件头、`DFX/Templates/NS_Atlas2D_Mesh.dfs` 的
+MeshRenderer 段注释都改成了「轴心在几何中心」，并写明"不要再加 Z 补偿"（改的是注释，不影响构建产物）。
+
 

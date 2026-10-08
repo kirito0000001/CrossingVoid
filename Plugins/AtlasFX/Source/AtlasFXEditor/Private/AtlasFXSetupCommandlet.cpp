@@ -44,6 +44,8 @@
 #include "TaggedAssetBrowserFilters/TaggedAssetBrowser_CommonFilters.h"
 #include "UObject/AssetRegistryTagsContext.h"   // EAssetRegistryTagsCaller 的定义（AssetData.h 里只有前向声明）
 #include "UObject/Package.h"
+#include "EditorReimportHandler.h"
+#include "Engine/StaticMesh.h"
 #include "UObject/SavePackage.h"
 #include "UObject/UnrealType.h"                 // FindFProperty
 #include "UserAssetTagEditorUtilities.h"
@@ -117,6 +119,16 @@ int32 UAtlasFXSetupCommandlet::Main(const FString& Params)
 	const bool bConfigOk = BuildWizardConfig();
 	const bool bSeedOk   = SeedRendererMaterialParameters();
 	const bool bTagsOk   = TagTemplates();
+
+	// 可选的网格重导（-ReimportMesh=/ZDBridge/FX/FXDefault）：换面片源文件之后跑一次，
+	// 顺便把包围盒中心打出来 —— 轴心在底边还是几何中心，看这一个数就知道。
+	{
+		FString ReimportMeshPath;
+		if (FParse::Value(*Params, TEXT("ReimportMesh="), ReimportMeshPath) && !ReimportMeshPath.IsEmpty())
+		{
+			ReimportMeshAsset(ReimportMeshPath);
+		}
+	}
 
 	// 新资产要能被对话框里的 Asset Registry 查询看到。
 	IAssetRegistry::Get()->ScanPathsSynchronous({ TEXT("/AtlasFX") }, /*bForceRescan=*/true);
@@ -554,6 +566,52 @@ bool UAtlasFXSetupCommandlet::SeedRendererMaterialParameters()
 		PatchedContentSystemCount);
 
 	return bOk;
+}
+
+void UAtlasFXSetupCommandlet::ReimportMeshAsset(const FString& MeshPath)
+{
+	// 路径可以写成 /ZDBridge/FX/FXDefault 或 /ZDBridge/FX/FXDefault.FXDefault，两种都收。
+	const FString ObjectPath = MeshPath.Contains(TEXT("."))
+		? MeshPath
+		: FString::Printf(TEXT("%s.%s"), *MeshPath, *FPackageName::GetShortName(MeshPath));
+
+	UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *ObjectPath);
+	if (Mesh == nullptr)
+	{
+		UE_LOG(LogAtlasFXSetup, Error, TEXT("重导 · 找不到静态网格 %s"), *ObjectPath);
+		return;
+	}
+
+	auto LogBounds = [Mesh](const TCHAR* Stage)
+	{
+		const FBoxSphereBounds Bounds = Mesh->GetBounds();
+		UE_LOG(LogAtlasFXSetup, Display,
+			TEXT("重导 · %s：包围盒中心 = (%.2f, %.2f, %.2f)，半尺寸 = (%.2f, %.2f, %.2f)　⇒ %s"),
+			Stage, Bounds.Origin.X, Bounds.Origin.Y, Bounds.Origin.Z,
+			Bounds.BoxExtent.X, Bounds.BoxExtent.Y, Bounds.BoxExtent.Z,
+			FMath::IsNearlyZero(Bounds.Origin.Z, 0.5f)
+				? TEXT("轴心在几何中心（Z 中心 = 0）")
+				: TEXT("轴心不在中心（Z 中心 = 高度/2 ⇒ 底边）"));
+	};
+
+	LogBounds(TEXT("重导前"));
+
+	// 用 FReimportManager：它会沿用资产里存的导入设置（Python 的 import_asset_tasks 是重新导入一遍，
+	// 设置可能被默认值顶掉）。
+	FReimportManager::Instance()->Reimport(Mesh, /*bAskForNewFileIfMissing=*/false, /*bShowNotification=*/false);
+
+	LogBounds(TEXT("重导后"));
+
+	Mesh->MarkPackageDirty();
+	UPackage* Package = Mesh->GetOutermost();
+	const FString FileName = FPackageName::LongPackageNameToFilename(
+		Package->GetName(), FPackageName::GetAssetPackageExtension());
+
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	SaveArgs.SaveFlags = SAVE_NoError;
+	UE_LOG(LogAtlasFXSetup, Display, TEXT("重导 · 存盘 %s：%s"), *Package->GetName(),
+		UPackage::SavePackage(Package, Mesh, *FileName, SaveArgs) ? TEXT("成功") : TEXT("失败"));
 }
 
 bool UAtlasFXSetupCommandlet::TagTemplates()
