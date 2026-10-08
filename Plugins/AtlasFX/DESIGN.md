@@ -985,6 +985,14 @@ PaperZD 的预览**确实会触发通知**，卡在 OwningInstance 上：
   重设位置/旋转/缩放 + `Activate(/*bReset=*/true)`（清掉上一轮粒子、从第 0 帧重播）；
   只有通知上的 Niagara 资产换了才销毁。两条生成路径统一用 `ENCPoolMethod::None`，
   组件生命周期完全由预览扩展自己管（换序列 / 关扩展时统一销毁）。
+* **往回拖时间轴 ≠ 循环回绕（2026-10-06 用户报「往回拖会固定触发所有特效，不管通知在进度条前面还是后面」）**：
+  两者在「时间倒回去」这一点上长得一样，但走过的区间不同 ——
+  * **回绕**走「旧时间 → 末尾」+「开头 → 新时间」两段，这两段之和就是这一帧的推进量（几毫秒）；
+  * **往回拖**只走拖动区间本身。
+  判据用「跳回去的幅度」：`JumpBack = Last - Playtime`，`WrapPath = (Duration - Last) + Playtime`，
+  `JumpBack > 2 * WrapPath` 才算回绕。回绕用「尾段 + 头段」的判据（0 帧通知每圈重新触发，与游戏一致）；
+  往回拖只认 `Playtime <= T <= Last` 这一段里的通知。
+  早先两者共用回绕那支（`Playtime >= T || Last <= T`），于是往回拖一下会把整条序列的特效全放一遍。
 * **回绕时挂在 0 帧的通知要能再触发 —— 通知判定不能按「两次时间的差」分方向（2026-10-06 用户报「放在最开头就只会播放一次」）**：
   PaperZD 回绕时是用 `Fmod` 把 `PlaybackMarker` 归零的（`PaperZDAnimPlayer.cpp:131`），传下去的
   `DeltaTime` **仍然是正的**，标志回绕的是 `CurrentTime < PreviousTime` ⇒ 走的还是「正向 + bLooped」

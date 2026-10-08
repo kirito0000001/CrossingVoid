@@ -622,6 +622,9 @@ namespace
 		const float DeltaTime = Playtime - LastPlaybackTime;
 		State.LastPlaybackTime = Playtime;
 
+		// 序列总长：区分「循环回绕」和「往回拖时间轴」要用它（见下面那个判据）。
+		const float SequenceDuration = Sequence ? Sequence->GetTotalDuration() : 0.0f;
+
 		// 暂停 / 没在播放的帧**不参与判定**。否则时间停在 0 的那些帧里，「第 0 帧的通知」会被算成已激活
 		// （PaperZD 的判据在 DeltaTime <= 0 那一支是 Playtime <= Time && LastPlaybackTime >= Time，0 <= 0 成立）
 		// ⇒ 真正按下播放时反而没有上升沿 ⇒ 第 0 帧的通知永远不触发。
@@ -670,10 +673,23 @@ namespace
 			}
 			else
 			{
-				// 时间倒回去了：预览是正向播放，这只可能是**回绕**（或手动往回拖时间轴），
-				// 按「正向 + bLooped」处理 —— 通知在新时间之前、或旧时间已经越过通知，都算到点。
-				// 挂在 0 帧的通知因此每次循环都会重新触发，与游戏一致。
-				if (Playtime >= NotifyTime || LastPlaybackTime <= NotifyTime)
+				// 时间倒回去了，两种可能，用「跳回去的幅度」区分：
+				//   * **回绕**：走的是「旧时间 → 末尾」+「开头 → 新时间」两段，这两段之和就是这一帧
+				//     的推进量（几毫秒）⇒ 跳回去的幅度远大于它；
+				//   * **往回拖时间轴**：跳回去的幅度就等于拖动区间本身。
+				// 回绕用「尾段 + 头段」的判据（挂在 0 帧的通知因此每圈都重新触发，与游戏一致）；
+				// 往回拖只认「拖过的那一段」—— 否则往回拖一下会把整条序列的特效全放一遍
+				//（用户 2026-10-06 报的：无论通知在进度条前面还是后面都会触发）。
+				const float JumpBack = LastPlaybackTime - Playtime;
+				const float WrapPath = (SequenceDuration - LastPlaybackTime) + Playtime;
+				if (SequenceDuration > 0.0f && JumpBack > 2.0f * WrapPath)
+				{
+					if (Playtime >= NotifyTime || LastPlaybackTime <= NotifyTime)
+					{
+						bActive = true;
+					}
+				}
+				else if (NotifyTime >= Playtime && NotifyTime <= LastPlaybackTime)
 				{
 					bActive = true;
 				}
