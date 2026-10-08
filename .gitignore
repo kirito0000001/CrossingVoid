@@ -49,8 +49,9 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
-# 第三方插件：DreamShader / DreamFX 各自是独立 git 仓库（fork 自 TypeDreamMoon），
+# 第三方插件：DreamShader / DreamFX 是独立 git 仓库（fork 自 TypeDreamMoon），
 # 不要塞进本仓库；需要时按 Plugins/AtlasFX/DESIGN.md §11 的地址重新 clone
+# 
 /Plugins/DreamShader/
 /Plugins/DreamFX/
 
@@ -62,3 +63,5 @@ Content/Decompiled/
 # DreamFX/DreamShader 反编译产物（临时排查用，不入库）
 DFX/Decompiled/
 Plugins/ZDBridge/Content/Decompiled/
+# AtlasFX 的镜像资产：dfx decompile-all / mirror-diff 的产物（固定点检查用的临时资产）
+Plugins/AtlasFX/Content/Decompiled/

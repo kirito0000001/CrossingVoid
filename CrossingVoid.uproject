@@ -88,6 +88,17 @@
 		{
 			"Name": "ZDBridge",
 			"Enabled": true
+		},
+		{
+			"Name": "DreamGUI",
+			"Enabled": true,
+			"SupportedTargetPlatforms": [
+				"Win64",
+				"Mac",
+				"Linux",
+				"IOS",
+				"Android"
+			]
 		}
 	],
 	"TargetPlatforms": [
