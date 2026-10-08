@@ -1116,4 +1116,26 @@ MeshRenderer 段注释都改成了「轴心在几何中心」，并写明"不要
 * **只放 Spawn**：位置逐帧累积，放 `ParticleUpdate` 会越跑越远；
 * **存量系统注意叠加**：若某系统的通知 `Offset` 里已经算过这 40，把模块里的 Z 改回 `0`，否则变 80。
 
+### 20.2 ⚠️ DFX 重建模板会清掉「Sheet 绑定」——重建后必须再跑一次命令工具
+
+2026-10-06 踩到：为了让网格模板带上偏移模块，我用 `dfx.ps1 build` 重建了
+`DFX/Templates/NS_Atlas2D_Mesh.dfs` ⇒ 渲染器被重新生成 ⇒ **它上面的「Sheet 纹理槽」和
+「`Sheet` ← `User.Atlas.ResolvedTexture` 属性绑定」一起没了**。
+
+原因：那条绑定是 `AtlasFXSetupCommandlet::SeedRendererMaterialParameters()` **事后补上去的**
+（引擎里网格渲染器的自定义材质只能走 `OverrideMaterials` + `bOverrideMaterials`，而「材质参数 →
+属性绑定」这块 DFX 的 `.dfs` 表达不了）。DFX 重建 = 按文本重新生成渲染器 ⇒ 命令工具补的东西就没了。
+
+**症状**：从重建后的模板新建的网格特效渲染成**一整块惨白/纯色的大方块**（材质拿不到图集，
+UV 换算退化）。判别方法很简单 —— **只有重建之后新建的系统坏，更早的正常**。
+
+**修法**：再跑一次命令工具（幂等，已有的会跳过）：
+
+```
+UnrealEditor-Cmd.exe CrossingVoid.uproject -run=AtlasFXSetup -stdout -unattended -nopause -nosplash
+```
+
+日志里会逐个系统打印「补了 N 项」，坏的那些是 `补了 2 项`，正常的 `补了 0 项`。
+**规矩：凡是 `dfx.ps1 build` 重建过模板，之后必须跑一次 `-run=AtlasFXSetup`。**
+
 

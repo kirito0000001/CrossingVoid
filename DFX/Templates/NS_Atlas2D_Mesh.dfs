@@ -17,6 +17,12 @@
 //   发射器一次性（EmitterState Once + Complete，t = 0 只发一颗粒子）。
 //
 // 改这个文件后：pwsh -File Plugins/DreamFX/.skill/dfx.ps1 build DFX/Templates/NS_Atlas2D_Mesh.dfs
+//
+// ⚠️⚠️ 重建之后**必须再跑一次**命令工具，否则从模板新建的网格特效会渲染成一整块惨白方块：
+//   UnrealEditor-Cmd.exe CrossingVoid.uproject -run=AtlasFXSetup -stdout -unattended -nopause -nosplash
+//   原因：渲染器上那条「Sheet 纹理槽 + Sheet ← User.Atlas.ResolvedTexture 属性绑定」是命令工具
+//   （SeedRendererMaterialParameters）事后补的，DFX 的 .dfs 表达不了「材质参数 → 属性绑定」，
+//   而 DFX 重建 = 按文本重新生成渲染器 ⇒ 补的东西就没了。详见 Plugins/AtlasFX/DESIGN.md §20.2。
 System(Name="Templates/NS_Atlas2D_Mesh", Root="Plugin.AtlasFX")
 {
     Settings = {
