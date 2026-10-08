@@ -18,16 +18,23 @@
 #include "Editor.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "IAssetTools.h"
+#include "IContentBrowserSingleton.h"
 #include "Misc/CoreMisc.h"
 #include "Misc/PackageName.h"
 #include "Modules/ModuleManager.h"
 #include "NiagaraDataInterfaceSpriteAtlas.h"
 #include "NiagaraSystem.h"
 #include "PaperFlipbook.h"
+#include "PaperFlipbookFactory.h"
+#include "PaperFlipbookHelpers.h"
+#include "PaperSprite.h"
+#include "PackageTools.h"
 #include "ScopedTransaction.h"
 #include "ToolMenus.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
+#include "UObject/SoftObjectPtr.h"
+#include "UObject/UnrealType.h"
 #include "Widgets/Notifications/SNotificationList.h"
 
 #define LOCTEXT_NAMESPACE "AtlasFXFlipbookActions"
@@ -170,6 +177,15 @@ namespace AtlasFXFlipbookMenu
 			}
 
 			NewSystem->MarkPackageDirty();
+
+			// ⚠️ 改完 DI 之后**必须让系统编译一次**，而且要等编译完成再存盘。
+			// Niagara 的编译结果（脚本 + 参数哈希那一套）是**存在资产里**的，而
+			// 「DuplicateAsset → 改 DI → SavePackage」这条路上没有人编译 ⇒ 存下去的是一个
+			// **没编译**的系统：在编辑器里得把它打开一次（打开才会编译）才生效，
+			// 症状就是「右键建完不显示，打开一次就好」（用户 2026-10-06 报）。
+			NewSystem->RequestCompile(/*bForce=*/false);
+			NewSystem->WaitForCompilationComplete(/*bIncludingGPUShaders=*/false, /*bShowProgress=*/false);
+
 			CreatedAssets.Add(NewSystem);
 		}
 
@@ -248,26 +264,201 @@ namespace AtlasFXFlipbookMenu
 		}
 	}
 
+	// ------------------------------------------------------------------
+	// Sprite 表 → 创建 Flipbook（名字加 _Flipbook 后缀）
+	// ------------------------------------------------------------------
+
+	/**
+	 * Sprite 表的类。`UPaperSpriteSheet` 声明在引擎插件 PaperSpriteSheetImporter 的 **Private** 头里
+	 * （`Source/PaperSpriteSheetImporter/Private/PaperSpriteSheet.h`），外部模块 include 不到，
+	 * 所以按类路径找，属性也走反射读。
+	 */
+	UClass* GetSpriteSheetClass()
+	{
+		static UClass* Cached = FindObject<UClass>(nullptr, TEXT("/Script/PaperSpriteSheetImporter.PaperSpriteSheet"));
+		return Cached;
+	}
+
+	/** 收集选中的 Sprite 表（.paper2dsprites 导入出来的那个资产）。 */
+	TArray<UObject*> CollectSelectedSpriteSheets(const UContentBrowserAssetContextMenuContext& Context)
+	{
+		TArray<UObject*> Result;
+		UClass* SheetClass = GetSpriteSheetClass();
+		if (SheetClass == nullptr)
+		{
+			return Result;
+		}
+
+		for (const FAssetData& AssetData : Context.SelectedAssets)
+		{
+			if (UObject* Asset = AssetData.GetAsset())
+			{
+				if (Asset->IsA(SheetClass))
+				{
+					Result.Add(Asset);
+				}
+			}
+		}
+		return Result;
+	}
+
+	/**
+	 * 复刻引擎自带的「Create Flipbooks」（PaperSpriteSheetAssetTypeActions.cpp:76-164），
+	 * **只改一件事：最终名字加 `_Flipbook` 后缀**。
+	 *
+	 * 为什么需要：引擎那版的名字是由 sprite 名推导出来的，往往和刚导入的 Sprite 表/贴图同名
+	 * （例如都叫 `Ko`）⇒ `CreateUniqueAssetName` 于是给出 `Ko1`。用户定案（2026-10-06）：
+	 * 导入保持原始命名，**Flipbook 加 `_Flipbook` 后缀**（工程里 `KO_Flipbook.uasset` 就是这个风格）。
+	 */
+	void CreateFlipbooksFromSpriteSheets(TArray<UObject*> Sheets)
+	{
+		IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools")).Get();
+		const FScopedTransaction Transaction(LOCTEXT("CreateAtlasFlipbooks", "创建 Flipbook（_Flipbook 后缀）"));
+
+		TArray<UObject*> Created;
+		for (UObject* Sheet : Sheets)
+		{
+			if (Sheet == nullptr)
+			{
+				continue;
+			}
+
+			const FString PackagePath = FPackageName::GetLongPackagePath(Sheet->GetOutermost()->GetName());
+
+			// 反射读 Sprites（TArray<TSoftObjectPtr<UPaperSprite>>）与 SpriteNames（TArray<FString>）。
+			TArray<UPaperSprite*> Sprites;
+			TArray<FString> SpriteNames;
+			{
+				const FArrayProperty* SpritesProp = FindFProperty<FArrayProperty>(Sheet->GetClass(), TEXT("Sprites"));
+				const FArrayProperty* NamesProp = FindFProperty<FArrayProperty>(Sheet->GetClass(), TEXT("SpriteNames"));
+				if (SpritesProp == nullptr || NamesProp == nullptr)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("AtlasFX：%s 上找不到 Sprites/SpriteNames 属性，跳过。"), *Sheet->GetName());
+					continue;
+				}
+
+				FScriptArrayHelper SpritesHelper(SpritesProp, SpritesProp->ContainerPtrToValuePtr<void>(Sheet));
+				FScriptArrayHelper NamesHelper(NamesProp, NamesProp->ContainerPtrToValuePtr<void>(Sheet));
+
+				// 和引擎一样：表里记的名字与 Sprite 数量对得上就用它，否则退回 Sprite 自己的名字。
+				const bool bUseSpriteNames = NamesHelper.Num() == SpritesHelper.Num();
+				for (int32 Index = 0; Index < SpritesHelper.Num(); ++Index)
+				{
+					// TSoftObjectPtr 的内存布局就是 FSoftObjectPtr。
+					const FSoftObjectPtr& SoftSprite = *reinterpret_cast<const FSoftObjectPtr*>(SpritesHelper.GetRawPtr(Index));
+					UPaperSprite* Sprite = Cast<UPaperSprite>(SoftSprite.LoadSynchronous());
+					if (Sprite == nullptr)
+					{
+						continue;
+					}
+
+					Sprites.Add(Sprite);
+					SpriteNames.Add(bUseSpriteNames
+						? *reinterpret_cast<const FString*>(NamesHelper.GetRawPtr(Index))
+						: Sprite->GetName());
+				}
+			}
+
+			TMap<FString, TArray<UPaperSprite*>> SpriteFlipbookMap;
+			FPaperFlipbookHelpers::ExtractFlipbooksFromSprites(SpriteFlipbookMap, Sprites, SpriteNames);
+
+			for (const TPair<FString, TArray<UPaperSprite*>>& Pair : SpriteFlipbookMap)
+			{
+				const FString DesiredName = Pair.Key + TEXT("_Flipbook");
+				const FString TentativePath = UPackageTools::SanitizePackageName(PackagePath + TEXT("/") + DesiredName);
+
+				FString PackageName;
+				FString AssetName;
+				AssetTools.CreateUniqueAssetName(TentativePath, FString(), /*out*/ PackageName, /*out*/ AssetName);
+
+				UPaperFlipbookFactory* Factory = NewObject<UPaperFlipbookFactory>();
+				for (UPaperSprite* Sprite : Pair.Value)
+				{
+					FPaperFlipbookKeyFrame* KeyFrame = new (Factory->KeyFrames) FPaperFlipbookKeyFrame();
+					KeyFrame->Sprite = Sprite;
+					KeyFrame->FrameRun = 1;
+				}
+
+				if (UObject* NewAsset = AssetTools.CreateAsset(AssetName, PackagePath, UPaperFlipbook::StaticClass(), Factory))
+				{
+					Created.Add(NewAsset);
+					UE_LOG(LogTemp, Log, TEXT("AtlasFX：从 Sprite 表 %s 创建 Flipbook %s（%d 帧）"),
+						*Sheet->GetName(), *NewAsset->GetName(), Pair.Value.Num());
+				}
+			}
+		}
+
+		if (Created.Num() > 0)
+		{
+			GEditor->SyncBrowserToObjects(Created);
+			Notify(FText::Format(LOCTEXT("FlipbooksCreated", "AtlasFX：创建了 {0} 个 Flipbook（_Flipbook 后缀）"),
+				FText::AsNumber(Created.Num())), true);
+		}
+		else
+		{
+			Notify(LOCTEXT("FlipbooksNone", "AtlasFX：没创建任何 Flipbook（这张表里没解析出成组的帧名？看 Output Log）"), false);
+		}
+	}
+
+	void PopulateSpriteSheetSection(FToolMenuSection& InSection)
+	{
+		const UContentBrowserAssetContextMenuContext* Context =
+			UContentBrowserAssetContextMenuContext::FindContextWithAssets(InSection);
+		if (Context == nullptr)
+		{
+			return;
+		}
+
+		const TArray<UObject*> Sheets = CollectSelectedSpriteSheets(*Context);
+		if (Sheets.Num() == 0)
+		{
+			return;
+		}
+
+		InSection.AddMenuEntry(
+			TEXT("AtlasFX.CreateFlipbooks"),
+			Sheets.Num() > 1
+				? FText::Format(LOCTEXT("CreateFlipbooksMany", "创建 Flipbook（{0} 张表，名字加 _Flipbook）"), FText::AsNumber(Sheets.Num()))
+				: LOCTEXT("CreateFlipbooksOne", "创建 Flipbook（名字加 _Flipbook）"),
+			LOCTEXT("CreateFlipbooksTip",
+				"和引擎自带的「Create Flipbooks」同一套名字推导，只是最终名字加 _Flipbook 后缀 —— "
+				"避免和刚导入的 Sprite 表/贴图撞名（撞名会被唯一化成 Ko1 这种）。"),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateStatic(&CreateFlipbooksFromSpriteSheets, Sheets)));
+	}
+
 	void RegisterMenus()
 	{
 		// 所有菜单项都记在这个 owner 名下，Shutdown 时一次 UnregisterOwnerByName 全清掉。
 		FToolMenuOwnerScoped OwnerScoped(OwnerName);
 
-		UToolMenu* Menu = UE::ContentBrowser::ExtendToolMenu_AssetContextMenu(UPaperFlipbook::StaticClass());
-		if (Menu == nullptr)
+		// ---- Paper Flipbook：一键建 AtlasFX 特效 ----
+		if (UToolMenu* Menu = UE::ContentBrowser::ExtendToolMenu_AssetContextMenu(UPaperFlipbook::StaticClass()))
 		{
-			return;
+			// 放在最前面：Paper Flipbook 本来没有别的插件分区，这样一眼就能看到。
+			FToolMenuSection& Section = Menu->AddSection(
+				SectionName,
+				LOCTEXT("AtlasFXSection", "AtlasFX"),
+				FToolMenuInsert(NAME_None, EToolMenuInsertType::First));
+
+			Section.AddDynamicEntry(
+				TEXT("AtlasFX.FlipbookActions"),
+				FNewToolMenuSectionDelegate::CreateStatic(&PopulateSection));
 		}
 
-		// 放在最前面：Paper Flipbook 本来没有别的插件分区，这样一眼就能看到。
-		FToolMenuSection& Section = Menu->AddSection(
-			SectionName,
-			LOCTEXT("AtlasFXSection", "AtlasFX"),
-			FToolMenuInsert(NAME_None, EToolMenuInsertType::First));
+		// ---- Sprite 表（.paper2dsprites 导入出来的那个资产）：建 Flipbook 时加 _Flipbook 后缀 ----
+		UClass* SheetClass = GetSpriteSheetClass();
+		if (UToolMenu* SpriteSheetMenu = SheetClass ? UE::ContentBrowser::ExtendToolMenu_AssetContextMenu(SheetClass) : nullptr)
+		{
+			FToolMenuSection& SpriteSection = SpriteSheetMenu->AddSection(
+				SectionName,
+				LOCTEXT("AtlasFXSection", "AtlasFX"),
+				FToolMenuInsert(NAME_None, EToolMenuInsertType::First));
 
-		Section.AddDynamicEntry(
-			TEXT("AtlasFX.FlipbookActions"),
-			FNewToolMenuSectionDelegate::CreateStatic(&PopulateSection));
+			SpriteSection.AddDynamicEntry(
+				TEXT("AtlasFX.SpriteSheetActions"),
+				FNewToolMenuSectionDelegate::CreateStatic(&PopulateSpriteSheetSection));
+		}
 	}
 }
 

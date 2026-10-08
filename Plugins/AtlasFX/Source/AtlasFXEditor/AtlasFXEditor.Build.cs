@@ -29,7 +29,8 @@ public class AtlasFXEditor : ModuleRules
 			"Niagara",               // UNiagaraSystem
 			"AtlasFX",               // UNiagaraDataInterfaceSpriteAtlas（属性绑定要按类型找它）
 			"PaperZD",               // UPaperZDAnimPlayer / UPaperZDAnimNotify（序列编辑器特效预览）
-			"Paper2D",               // UPaperFlipbook（右键菜单挂在它的资产类型上）
+			"Paper2D",               // UPaperFlipbook / UPaperSpriteSheet（右键菜单挂在它们的资产类型上）
+			"Paper2DEditor",         // FPaperFlipbookHelpers / UPaperFlipbookFactory（复刻「Create Flipbooks」）
 			"ToolMenus",             // UToolMenus / FToolMenuSection / FToolMenuOwnerScoped
 			"ContentBrowser",        // UE::ContentBrowser::ExtendToolMenu_AssetContextMenu
 			"AssetTools",            // IAssetTools::DuplicateAsset

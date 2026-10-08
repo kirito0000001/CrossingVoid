@@ -1156,4 +1156,39 @@ UnrealEditor-Cmd.exe CrossingVoid.uproject -run=AtlasFXSetup -stdout -unattended
 `加载时自动重烘帧表 —— N 帧 / F fps / 画布 928x640 / 贴图 …` 并逐个存盘
 （`Defence` / `Ko-fx1s1` / `Ko-fx2s1` / `Ko-fx3s1` / `Effects1` / `Sk1-fx2` / `Sk2-fx1` / …）。
 
+---
+
+## 21. 右键创建的两个后续修正（2026-10-06）
+
+### 21.1 创建后必须编译再存盘（修「右键建完不显示，打开一次就好」）
+
+症状：用右键「创建 AtlasFX 特效（网格渲染器）」建出来的系统在别处不显示，
+**必须在 Niagara 编辑器里打开一次**才生效。
+
+原因：Niagara 的编译结果（脚本 + 参数哈希那一套）是**存在资产里**的，而创建那条路是
+「`DuplicateAsset` → 改 DI → `SavePackage`」—— 中间**没有人编译** ⇒ 存下去的是一个**没编译**的
+系统；打开一次编辑器把它编译掉，之后才生效。
+
+修法（`AtlasFXFlipbookActions.cpp` 的 `CreateSystems`）：改完 DI 之后
+`RequestCompile(/*bForce=*/false)` + `WaitForCompilationComplete(false, false)`，**等编译完成再存盘**。
+
+### 21.2 Sprite 表右键：创建 Flipbook 时加 `_Flipbook` 后缀
+
+用户定案：`.paper2dsprites` 导入保持原始命名（那是引擎导入器的行为，改不了也没必要改），
+但**建 Flipbook 时加 `_Flipbook` 后缀** —— 引擎自带的「Create Flipbooks」用 sprite 名推导出来的名字
+常常和刚导入的 Sprite 表/贴图同名（都叫 `Ko`）⇒ `CreateUniqueAssetName` 于是给出 `Ko1`。
+
+实现：右键 Sprite 表 → 新菜单项「创建 Flipbook（名字加 `_Flipbook`）」
+（`AtlasFXFlipbookActions.cpp` 的 `CreateFlipbooksFromSpriteSheets`，复刻
+`PaperSpriteSheetAssetTypeActions.cpp:76-164` 的名字推导，只把最终名字改成 `<推导名>_Flipbook`）。
+
+⚠️ 两个坑：
+
+* `UPaperSpriteSheet` 声明在引擎插件 `PaperSpriteSheetImporter` 的 **Private** 头里
+  （`Source/PaperSpriteSheetImporter/Private/PaperSpriteSheet.h`）⇒ 外部模块 include 不到，
+  只能按类路径 `FindObject<UClass>(nullptr, TEXT("/Script/PaperSpriteSheetImporter.PaperSpriteSheet"))`
+  + 反射读 `Sprites` / `SpriteNames`（`TSoftObjectPtr` 的内存布局就是 `FSoftObjectPtr`，
+  可以 `reinterpret_cast` 之后 `LoadSynchronous()`）；
+* `AtlasFXEditor.Build.cs` 需要 **`Paper2DEditor`** 依赖（`FPaperFlipbookHelpers` / `UPaperFlipbookFactory`）。
+
 
