@@ -985,6 +985,12 @@ PaperZD 的预览**确实会触发通知**，卡在 OwningInstance 上：
   重设位置/旋转/缩放 + `Activate(/*bReset=*/true)`（清掉上一轮粒子、从第 0 帧重播）；
   只有通知上的 Niagara 资产换了才销毁。两条生成路径统一用 `ENCPoolMethod::None`，
   组件生命周期完全由预览扩展自己管（换序列 / 关扩展时统一销毁）。
+* **回绕时挂在 0 帧的通知要能再触发 —— 通知判定不能按「两次时间的差」分方向（2026-10-06 用户报「放在最开头就只会播放一次」）**：
+  PaperZD 回绕时是用 `Fmod` 把 `PlaybackMarker` 归零的（`PaperZDAnimPlayer.cpp:131`），传下去的
+  `DeltaTime` **仍然是正的**，标志回绕的是 `CurrentTime < PreviousTime` ⇒ 走的还是「正向 + bLooped」
+  那一支，条件放宽成 `Playtime >= T || Last <= T`（于是 0 帧的通知每次循环都重新触发）。
+  预览早先按 `Playtime - LastPlaybackTime` 分方向，回绕时差值为负 ⇒ 落进反向那一支 ⇒ 只在第一次播。
+  现在：`Playtime >= Last` 走正向那一支；`Playtime < Last`（回绕 / 手动往回拖时间轴）按正向 + bLooped 处理。
 * **第 0 帧的通知不触发（2026-10-06 用户报的 bug）**：通知挂在 `Time = 0` 时，按播放看不到特效。
   原因不是 PaperZD，是预览**把暂停的帧也算进去了**：时间停在 0 的那些帧走 PaperZD 判据的
   `DeltaTime <= 0` 那一支（`Playtime <= Time && LastPlaybackTime >= Time`，`0 <= 0` 成立）⇒

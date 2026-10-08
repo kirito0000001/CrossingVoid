@@ -592,29 +592,28 @@ namespace
 				continue;
 			}
 
-			// 与 PaperZDAnimNotify.cpp:27-50 完全同一条规则（含回绕与反向）。
+			// 与 PaperZDAnimNotify.cpp:27-50 同一条规则，但**分支不能按「两次时间的差」来分**：
+			// 循环回绕时 PaperZD 是用 Fmod 把 PlaybackMarker 归零的（PaperZDAnimPlayer.cpp:131），
+			// 传下去的 DeltaTime 仍然是**正的**，标志回绕的是「CurrentTime < PreviousTime」
+			// ⇒ 走的还是「正向 + bLooped」那一支，条件放宽成 `Playtime >= T || Last <= T`。
+			// 早先按差值分方向，回绕时差值为负 ⇒ 落进反向那一支 ⇒ 挂在 0 帧的通知只在第一次播
+			//（用户 2026-10-06 报的「放在最开头就只会播放一次」）。
 			const float NotifyTime = Notify->Time;
 			bool bActive = false;
-			if (DeltaTime > 0.0f)
+			if (Playtime >= LastPlaybackTime)
 			{
-				const bool bLooped = Playtime < LastPlaybackTime;
-				if (bLooped && (Playtime >= NotifyTime || LastPlaybackTime <= NotifyTime))
-				{
-					bActive = true;
-				}
-				else if (Playtime >= NotifyTime && LastPlaybackTime <= NotifyTime)
+				// 正着走：PaperZD 正向播放那一支（它的 bLooped 在这里恒为 false）。
+				if (Playtime >= NotifyTime && LastPlaybackTime <= NotifyTime)
 				{
 					bActive = true;
 				}
 			}
 			else
 			{
-				const bool bLooped = Playtime > LastPlaybackTime;
-				if (bLooped && (Playtime <= NotifyTime || LastPlaybackTime >= NotifyTime))
-				{
-					bActive = true;
-				}
-				else if (Playtime <= NotifyTime && LastPlaybackTime >= NotifyTime)
+				// 时间倒回去了：预览是正向播放，这只可能是**回绕**（或手动往回拖时间轴），
+				// 按「正向 + bLooped」处理 —— 通知在新时间之前、或旧时间已经越过通知，都算到点。
+				// 挂在 0 帧的通知因此每次循环都会重新触发，与游戏一致。
+				if (Playtime >= NotifyTime || LastPlaybackTime <= NotifyTime)
 				{
 					bActive = true;
 				}
