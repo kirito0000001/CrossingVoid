@@ -210,7 +210,7 @@ pwsh -File Plugins/DreamFX/.skill/dfx.ps1 decompile /AtlasFX/Templates/NS_Atlas2
 | 干净的整张贴图当一帧显示 | 运行时 DI 是**空表**（`FrameCount = 0`）。查 Flipbook 有没有指、PaperSprite 的 Source UV / Source Dimension 有没有设。模块自带这个兜底就是为了让你一眼认出它（兜底用的尺寸是 Defatk 的 597×487）。**另一种可能**是三个动态材质参数没送到 ⇒ 材质自己的兜底生效，见 §5 末 |
 | 一片噪点 | DI 调用根本没执行，材质拿到的是未初始化的垃圾值 |
 | 帧不走 | 粒子更新里有没有 `ParticleState`（没有它 `NormalizedAge` 永远是 0）；模块有没有勾 Update |
-| 全黑 | 渲染器的三个 Material Binding 有没有指向 DMP（默认就对）；材质有没有勾 Used with Niagara Sprites；Blend Mode 是不是 Additive |
+| 全黑 | 渲染器的三个 Material Binding 有没有指向 DMP（默认就对）；材质有没有勾 Used with Niagara Sprites；Blend Mode 是不是 Translucent（2026-10-09 起骨架材质由 Additive 改为 Translucent） |
 | 面片是正方形 / 被拉伸 | `Size Scale` 太小就调大；`Fit Frame` 是不是你要的那个 |
 | 边缘有邻居帧的杂色 | 数据接口里的「取帧内缩」调到 1～2 |
 | 模块加进来报找不到函数 | 数据接口那层没编成功（§6 第 ① 条），或者编辑器没重启 |

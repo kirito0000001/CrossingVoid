@@ -25,9 +25,16 @@
 // TexCoord 和面片朝向，所以没必要维护两份。引擎侧字段名是 bUsedWithNiagaraMeshParticles
 // （Material.h:759，不是 bUsedWithNiagaraMeshes）。
 // TwoSided：网格渲染器喂进来的面片绕序不一定朝相机，关掉背面剔除省得整个特效消失。
-// 加性混合下面片只有一组三角形，双面不会出现「前后两层叠加变亮」的问题（Cube 才会）。
+// Translucent 下双面要注意「同一像素被前后两层各混一次」，但精灵/网格粒子都是一组三角形
+// 的单层面片（Cube 才会真有两层），所以这里不需要额外处理。
 // ZDBridge 手搓的那张同用途材质也是这么配的（ZDBridgeEffectNiagara.cpp:229 Material->TwoSided = true）。
-#pragma material(ShadingModel = Unlit, BlendMode = Additive, TwoSided = true, bUsedWithNiagaraSprites = true, bUsedWithNiagaraMeshParticles = true, Backend = Graph)
+//
+// 2026-10-09 BlendMode 从 Additive 改为 Translucent：用户反馈"Alpha 没了"——
+// Additive 的像素输出是 Color * Opacity 加到背景上，透明区只是"不加亮"，
+// 背景亮的地方看不出精灵边界，暗部也不会被精灵遮住，所以观感上像丢了 Alpha。
+// Translucent 走的是标准 alpha 混合（Unlit 下最终色 = EmissiveColor，再按 Opacity 混合），
+// 精灵能真正遮住背景，边缘半透也会保留。想要发光感就建材质实例单独用 Additive 版本。
+#pragma material(ShadingModel = Unlit, BlendMode = Translucent, TwoSided = true, bUsedWithNiagaraSprites = true, bUsedWithNiagaraMeshParticles = true, Backend = Graph)
 
 // 默认贴图**故意留空**（None）：插件资产不引用工程里的任何东西，示例图集随便删。
 // 用的时候：直接改这个材质的 Sheet，或者建材质实例只覆盖 Sheet（推荐 —— 一个图集一个 MI）。
@@ -80,8 +87,9 @@ export void M_FXAtlasSheet(inout material m)
     float4 CFallback = Sheet.Sample(UE.TexCoord(Index = 0));
     float4 C = lerp(CMain, CFallback, NoData);
 
-    // Additive 的像素着色器输出是 Color * Opacity（BasePassPixelShader.usf:2325-2327），
-    // 所以「颜色给采样值、透明度给采样 alpha」= 预乘式的加性精灵，正是闪电要的。
+    // Unlit + Translucent 的最终色就是 EmissiveColor，再按 Opacity 做 alpha 混合
+    // （不透明处遮住背景、半透处保留渐变）。所以这里给「颜色 = 采样值、透明度 = 采样 alpha」，
+    // 采样 alpha 为 0 的地方（帧外、贴图透明区）完全不显示。
     m.EmissiveColor = C.rgb;
     m.Opacity = C.a;
 }

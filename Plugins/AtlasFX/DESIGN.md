@@ -417,7 +417,11 @@ UV = (整数格 + 格内UV) × (1/列数, 1/行数)
 `M_FXAtlasSheet` 的 `#pragma material(...)` 必须同时具备这两条：
 
 ```
-#pragma material(ShadingModel = Unlit, BlendMode = Additive, TwoSided = true,
+#pragma material(ShadingModel = Unlit, BlendMode = Translucent, TwoSided = true,
+// 2026-10-09 改为 Translucent：用户反馈"Alpha 没了"。Additive 的透明区只是"不加亮"，
+// 亮背景上看不出精灵边界、暗部也不被遮挡 ⇒ 观感像丢了 Alpha；Translucent 走标准 alpha
+// 混合（Unlit 下最终色 = EmissiveColor，再按 Opacity 混合），能真正遮背景、保留半透边。
+// 要发光感就复制一份材质实例单独用 Additive，不要把骨架材质改回去。
                  bUsedWithNiagaraSprites = true, bUsedWithNiagaraMeshParticles = true,
                  Backend = Graph)
 ```
