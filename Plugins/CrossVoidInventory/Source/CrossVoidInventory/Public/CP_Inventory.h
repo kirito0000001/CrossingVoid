@@ -12,98 +12,98 @@ struct FItemSaveSingleData
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly, Category = "Inventory|Component|Save", DisplayName="类型_基础")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category = "Inventory|Component|Save", DisplayName="类型_基础")
 	TSubclassOf<UInventoryBaseItem> Class = {};
 
-	UPROPERTY(BlueprintReadOnly, Category = "Inventory|Component|Save", DisplayName="名称")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category = "Inventory|Component|Save", DisplayName="名称")
 	FText Name = {};
 
-	UPROPERTY(BlueprintReadOnly, Category = "Inventory|Component|Save", DisplayName="介绍")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category = "Inventory|Component|Save", DisplayName="介绍")
 	FText Description = {};
 
-	UPROPERTY(BlueprintReadOnly, Category = "Inventory|Component|Save", DisplayName="数量")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category = "Inventory|Component|Save", DisplayName="数量")
 	int Count = 0;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Inventory|Component|Save", DisplayName="堆叠数量")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category = "Inventory|Component|Save", DisplayName="堆叠数量")
 	int MaxCount = 0;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Inventory|Component|Save", DisplayName="关键词")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category = "Inventory|Component|Save", DisplayName="关键词")
 	TArray<FString> KeyWords = {};
 
-	UPROPERTY(BlueprintReadOnly, Category = "Inventory|Component|Save", DisplayName="位置")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category = "Inventory|Component|Save", DisplayName="位置")
 	FIntPoint Location = {};
 
-	UPROPERTY(BlueprintReadOnly, Category = "Inventory|Component|Save", DisplayName="品质")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category = "Inventory|Component|Save", DisplayName="品质")
 	int Quality = 0;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Inventory|Component|Save", DisplayName="重量")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category = "Inventory|Component|Save", DisplayName="重量")
 	float Weight = 0.0f;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Inventory|Component|Save", DisplayName="价格")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category = "Inventory|Component|Save", DisplayName="价格")
 	int Price = 0;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Inventory|Component|Save", DisplayName="耐久")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category = "Inventory|Component|Save", DisplayName="耐久")
 	int Durability = 0;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Inventory|Component|Save", DisplayName="等级")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category = "Inventory|Component|Save", DisplayName="等级")
 	int Level = 0;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Inventory|Component|Save", DisplayName="优先级")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category = "Inventory|Component|Save", DisplayName="优先级")
 	int Priority = 0;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Inventory|Component|Save", DisplayName="页数")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category = "Inventory|Component|Save", DisplayName="页数")
 	int Pages = 0;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Inventory|Component|Save", DisplayName="额外词条")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category = "Inventory|Component|Save", DisplayName="额外词条")
 	TArray<FString> ExtraAttributes = {};
 
-	UPROPERTY(BlueprintReadOnly, Category = "Inventory|Component|Save", DisplayName="物品额外介绍")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category = "Inventory|Component|Save", DisplayName="物品额外介绍")
 	TArray<FText> ExtraDescription = {};
 
-	UPROPERTY(BlueprintReadOnly, Category = "Inventory|Component|Save", DisplayName="当前技能")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category = "Inventory|Component|Save", DisplayName="当前技能")
 	TArray<int> SkillNow = {};
 
-	UPROPERTY(BlueprintReadOnly, Category = "Inventory|Component|Save", DisplayName="拥有的技能")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category = "Inventory|Component|Save", DisplayName="拥有的技能")
 	TArray<bool> SkillHave = {};
 
-	UPROPERTY(BlueprintReadOnly, Category = "Inventory|Component|Save", DisplayName="技能等级")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category = "Inventory|Component|Save", DisplayName="技能等级")
 	TArray<int> SkillLevel = {};
 
-	UPROPERTY(BlueprintReadOnly, Category = "Inventory|Component|Save", DisplayName="当前幻形")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category = "Inventory|Component|Save", DisplayName="当前幻形")
 	int CharShapeNow = 0;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Inventory|Component|Save", DisplayName="拥有的幻形")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category = "Inventory|Component|Save", DisplayName="拥有的幻形")
 	TArray<bool> CharShapeHas = {};
 
-	UPROPERTY(BlueprintReadOnly, Category="Inventory|Component|Save", DisplayName="速度值")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category="Inventory|Component|Save", DisplayName="速度值")
 	int Speed = 0;
 
-	UPROPERTY(BlueprintReadOnly, Category="Inventory|Component|Save", DisplayName="生命值")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category="Inventory|Component|Save", DisplayName="生命值")
 	int Health = 0;
 
-	UPROPERTY(BlueprintReadOnly, Category="Inventory|Component|Save", DisplayName="攻击力")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category="Inventory|Component|Save", DisplayName="攻击力")
 	int Attack = 0;
 
-	UPROPERTY(BlueprintReadOnly, Category="Inventory|Component|Save", DisplayName="防御力")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category="Inventory|Component|Save", DisplayName="防御力")
 	int PhyDefense = 0;
 
-	UPROPERTY(BlueprintReadOnly, Category="Inventory|Component|Save", DisplayName="异能防御值")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category="Inventory|Component|Save", DisplayName="异能防御值")
 	int MagDefense = 0;
 
-	UPROPERTY(BlueprintReadOnly, Category="Inventory|Component|Save", DisplayName="暴击率")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category="Inventory|Component|Save", DisplayName="暴击率")
 	int Critical = 0;
 
-	UPROPERTY(BlueprintReadOnly, Category="Inventory|Component|Save", DisplayName="暴击伤害")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category="Inventory|Component|Save", DisplayName="暴击伤害")
 	int CriticalC = 0;
 
-	UPROPERTY(BlueprintReadOnly, Category="Inventory|Component|Save", DisplayName="同步率")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category="Inventory|Component|Save", DisplayName="同步率")
 	int Synchronize = 0;
 	
 	FItemSaveSingleData()
 	{
 		Class = UInventoryBaseItem::StaticClass();
-		Name = FText::FromString("物品");
-		Description = FText::FromString("物品");
+		Name = FText::FromString(TEXT("物品"));
+		Description = FText::FromString(TEXT("物品"));
 		Count = 1;
 		MaxCount = 1;
 		KeyWords = {};
@@ -173,7 +173,7 @@ struct FInventorySaveData
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadWrite, Category = "Inventory|Component|Save", DisplayName="物品合集数据")
+	UPROPERTY(BlueprintReadWrite,EditAnywhere, Category = "Inventory|Component|Save", DisplayName="物品合集数据")
 	TArray<FItemSaveSingleData> ItemSSaveData;
 };
 
