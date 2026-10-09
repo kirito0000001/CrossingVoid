@@ -406,6 +406,9 @@ public: //函数
 	
 	UFUNCTION(BlueprintCallable, Category = "Base|Fuc", DisplayName="生成守备数值")
 	bool PerformSpawn(FSkillData2D SkillPer);
+	
+	UFUNCTION(BlueprintCallable, Category = "Base|Fuc", DisplayName="生成守备数值-核心代码")
+	bool PerformSpawnCore(EPreformType Preform,bool IsSkillAbandon,float Value);
 
 	UFUNCTION(BlueprintCallable, Category = "Base|Fuc", DisplayName="寻找目标_单个")
 	ACrossvoid2DatkNew* FindTarget(FName Who);
@@ -446,6 +449,12 @@ public: //函数
 
 	UFUNCTION(BlueprintCallable, Category = "Base|Fuc", DisplayName="获取一方角色")
 	TArray<ACrossvoid2DatkNew*> EnemyOrSelf(bool IsSelf);
+	
+	UFUNCTION(BlueprintCallable, Category = "Base|Fuc", DisplayName="清除守备")
+	void ClearPreform();
+	
+	UFUNCTION(BlueprintCallable, Category = "Base|Fuc", DisplayName="转换守备")
+	void TranslatePreform(EPreformType NewPreform,bool IsSkillAbandon ,float NewValue);
 
 public: //自定义事件
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, DisplayName="角色开始行动")

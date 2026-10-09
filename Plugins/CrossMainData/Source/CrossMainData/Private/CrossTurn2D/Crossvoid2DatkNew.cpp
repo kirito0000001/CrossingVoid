@@ -95,18 +95,33 @@ void ACrossvoid2DatkNew::CheckSelfData()
 
 bool ACrossvoid2DatkNew::PerformSpawn(FSkillData2D SkillPer)
 {
-	float HPspwan = 0.0f; //新建一个生成的盾
-	float PhyDefenseRate = 0.0f; //物理护盾生成的比例
-	float MagDefenseRate = 0.0f; //异能护盾生成的比例
+	//计算技能的可用形态
 	int CharShapeNow = SkillPer.SkillState.Num()-1 < CharShape ? SkillPer.SkillState.Num()-1 : CharShape;
-	bool IsSkillAbandon = SkillPer.SkillState[CharShapeNow] == E2DSkillType::Abandon; //判断这个技能是被丢弃的吗
+	//判断这个技能是被丢弃的吗
+	bool IsSkillAbandon = SkillPer.SkillState[CharShapeNow] == E2DSkillType::Abandon; 
+	
+	//如果技能可用，就生成守备
+	if (SkillPer.PreSkillValue.IsValidIndex(CharShapeNow))
+	{
+		return PerformSpawnCore(SkillPer.PreformType[CharShapeNow],IsSkillAbandon,SkillPer.PreSkillValue[CharShapeNow]);
+	}
+	return false;
+}
+
+bool ACrossvoid2DatkNew::PerformSpawnCore(EPreformType Preform,bool IsSkillAbandon,float Value)
+{
+	float HPspwan = 0.0f; //守备值
+	float PhyDefenseRate = 0.0f; //物理比例
+	float MagDefenseRate = 0.0f; //异能比例
+	
 	//开始生成守备数值
-	PreformType = SkillPer.PreformType[CharShapeNow]; //找到对应的守备类型并设置
+	PreformType = Preform; //设置守备类型
 	switch (PreformType)
 	{
 	case EPreformType::Air:
 		return false;
 	case EPreformType::Defense:
+		//触发对应委托
 		if (IsSkillAbandon)
 		{
 			FSkillDiscard.Broadcast();//触发技能丢弃的委托
@@ -115,21 +130,23 @@ bool ACrossvoid2DatkNew::PerformSpawn(FSkillData2D SkillPer)
 		{
 			FSkillStart.Broadcast(); //触发技能开始委托
 		}
-		HPspwan = MaxHealth * (IsSkillAbandon ? 0.36f : 0.18f); //生成总盾值
-		if (SkillPer.PreSkillValue.IsValidIndex(CharShapeNow))
-		{
-			PhyDefenseRate = SkillPer.PreSkillValue[CharShapeNow]; //设置物理比例
-			MagDefenseRate = 1 - PhyDefenseRate; //设置异能比例
-		}
-
-		PhyDefense = PhyDefenseRate * HPspwan; //根据比例生成物理盾
-		MagDefense = MagDefenseRate * HPspwan;
+		//根据丢弃状态生成守备总值
+		HPspwan = MaxHealth * (IsSkillAbandon ? 0.36f : 0.18f); 
+		
+		PhyDefenseRate = Value; //设置物理比例
+		MagDefenseRate = 1 - PhyDefenseRate; //设置异能比例
+		
+		//根据丢弃来决定盾生成量，丢弃就按源计算来，正常释放有上限，防御是3000
+		PhyDefense =IsSkillAbandon ? PhyDefenseRate * HPspwan : (PhyDefenseRate * HPspwan > 3000 ? 3000 : PhyDefenseRate * HPspwan);
+		MagDefense =IsSkillAbandon ? MagDefenseRate * HPspwan : (MagDefenseRate * HPspwan > 3000 ? 3000 : MagDefenseRate * HPspwan);
 
 		DefenseUIInitialize(PreformType, PhyDefense, MagDefense); //触发守备UI初始化
 
 		DefAtkPhy = PhyDefenseRate > MagDefenseRate; //使用哪种类型反击
 		return IsSkillAbandon;
+		
 	case EPreformType::Attack:
+		//触发对应委托
 		if (IsSkillAbandon)
 		{
 			FSkillDiscard.Broadcast();//触发技能丢弃的委托
@@ -138,21 +155,24 @@ bool ACrossvoid2DatkNew::PerformSpawn(FSkillData2D SkillPer)
 		{
 			FSkillStart.Broadcast(); //触发技能开始委托
 		}
-		HPspwan = MaxHealth * (IsSkillAbandon ? 0.10f : 0.05f); //生成总盾值
-		if (SkillPer.PreSkillValue.IsValidIndex(CharShapeNow))
-		{
-			PhyDefenseRate = SkillPer.PreSkillValue[CharShapeNow]; //设置物理比例
-			MagDefenseRate = 1 - PhyDefenseRate; //设置异能比例
-		}
+		
+		//根据丢弃状态生成守备总值
+		HPspwan = MaxHealth * (IsSkillAbandon ? 0.10f : 0.05f); 
+		
+		PhyDefenseRate = Value; //设置物理比例
+		MagDefenseRate = 1 - PhyDefenseRate; //设置异能比例
 
-		PhyDefense = PhyDefenseRate * HPspwan; //根据比例生成物理盾
-		MagDefense = MagDefenseRate * HPspwan;
+		//根据丢弃来决定盾生成量，丢弃就按源计算来，正常释放有上限，反击是1600
+		PhyDefense =IsSkillAbandon ? PhyDefenseRate * HPspwan : (PhyDefenseRate * HPspwan > 1600 ? 1600 : PhyDefenseRate * HPspwan);
+		MagDefense =IsSkillAbandon ? MagDefenseRate * HPspwan : (MagDefenseRate * HPspwan > 1600 ? 1600 : MagDefenseRate * HPspwan);
 
 		DefenseUIInitialize(PreformType, PhyDefense, MagDefense); //触发守备UI初始化
 
 		DefAtkPhy = PhyDefenseRate > MagDefenseRate; //使用哪种类型反击
 		return IsSkillAbandon;
+		
 	case EPreformType::Dodge:
+		//触发对应委托
 		if (IsSkillAbandon)
 		{
 			FSkillDiscard.Broadcast();//触发技能丢弃的委托
@@ -161,10 +181,9 @@ bool ACrossvoid2DatkNew::PerformSpawn(FSkillData2D SkillPer)
 		{
 			FSkillStart.Broadcast(); //触发技能开始委托
 		}
-		if (SkillPer.PreSkillValue.IsValidIndex(CharShapeNow))
-		{
-			PhyDefenseRate = SkillPer.PreSkillValue[CharShapeNow];
-		}
+		
+		PhyDefenseRate = Value;
+		
 		Dodges = (IsSkillAbandon ? PhyDefenseRate * 2 : PhyDefenseRate);
 		DefenseUIInitialize(PreformType, Dodges, 0); //触发守备UI初始化
 		return IsSkillAbandon;
@@ -481,6 +500,24 @@ TArray<ACrossvoid2DatkNew*> ACrossvoid2DatkNew::EnemyOrSelf(bool IsSelf)
 	{
 		return IsSelf ? P1s : P2s;
 	}
+}
+
+void ACrossvoid2DatkNew::ClearPreform()
+{
+	PhyDefense = MagDefense = Dodges = 0; //全部归零
+	DefenseUIUpdate(0, 0, 0); //更新UI
+	PreformType = EPreformType::Air; //守备状态归零
+}
+
+void ACrossvoid2DatkNew::TranslatePreform(EPreformType NewPreform,bool IsSkillAbandon ,float NewValue)
+{
+	//如果已经是目标守备状态，直接结束
+	if (PreformType == NewPreform)
+	{
+		return;
+	}
+	//生成守备
+	PerformSpawnCore(NewPreform,IsSkillAbandon,NewValue);
 }
 
 void ACrossvoid2DatkNew::ExtraAttack_Implementation()
