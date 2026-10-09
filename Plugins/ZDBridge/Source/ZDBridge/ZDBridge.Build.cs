@@ -26,6 +26,9 @@ public class ZDBridge : ModuleRules
             // （见 ZDBridgeLibrary.h 的 ResolveLightConfigurationAssets）。
             "UMGEditor",
             "AssetRegistry",
+            // 蓝图函数图/节点类型（UK2Node_FunctionEntry、UEdGraphSchema_K2）：用变量写入
+            // （ZDBridgeFillBpVar.cpp）要按反射和类型两头确认，离不开这个模块。
+            "BlueprintGraph",
             "Json",
             "JsonUtilities",
             "MetasoundEngine",
