@@ -202,7 +202,7 @@ public: //变量
 	FSkillData2D SkillSlot2 = {};
 
 	//技能槽3
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crossing|Skill", DisplayName="大招")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Crossing|Skill", DisplayName="终结技")
 	FSkillData2D SkillSlot3 = {};
 
 	//技能槽4
@@ -279,8 +279,21 @@ public: //变量
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category ="Crossing|System", DisplayName="能否死亡")
 	bool CanDie = true;
+	
+	//1技能2技能，3大招，4护援技，5连携技
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category ="Crossing|System", DisplayName="当前技能索引")
+	int SKindex = 0;
+	
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category ="Crossing|Data", DisplayName="出伤点倍率（用于反击等特殊伤害，立即清算）")
+	float RateAdd = 0.0f;
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category ="Crossing|Data", DisplayName="入伤点倍率（用于反击等特殊伤害，立即清算）")
+	float RateMinus = 0.0f;
 
 	//反击系列变量
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category ="Crossing|System", DisplayName="反击目标")
+	TObjectPtr<ACrossvoid2DatkNew> DefatkTarget = nullptr;
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category ="Crossing|System", DisplayName="反击倍率")
+	float DefatkRateBase = 0.8f;
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category ="Crossing|Data", DisplayName="使用什么属性来反击")
 	bool DefAtkPhy = false;
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category ="Crossing|Data", DisplayName="反击赢了吗")
@@ -291,6 +304,8 @@ public: //变量
 	float DefAtkMagDM = 0.0f;
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category ="Crossing|Data", DisplayName="反击触发暴击")
 	bool DefCriticalis = false;
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category ="Crossing|Data", DisplayName="反击飞出距离基础倍率")
+	float DefAtkFlyoutBase = 1.0f;
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category ="Crossing|Data", DisplayName="反击飞出距离")
 	float DefAtkFlyout = 0.0f;
 
@@ -329,12 +344,6 @@ public: //变量
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category ="Crossing|System", DisplayName="移动计时器柄")
 	FTimerHandle MoveTimer = {};
-
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category ="Crossing|System", DisplayName="反击目标")
-	TObjectPtr<ACrossvoid2DatkNew> DefatkTarget = nullptr;
-
-	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category ="Crossing|System", DisplayName="反击倍率")
-	float DefatkRateBase = 0.8f;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category ="Crossing|System", DisplayName="额外攻击容量")
 	TArray<FName> ExtraTargets = {};
@@ -399,13 +408,23 @@ public: //委托
 
 	UPROPERTY(BlueprintAssignable, BlueprintCallable, Category = "Crossing|Delegaet", DisplayName="技能丢弃时")
 	FBuffUpdateDelegaet FSkillDiscard;//C里不写，蓝图父类里写了
+	
+	UPROPERTY(BlueprintAssignable, BlueprintCallable, Category = "Crossing|Delegaet", DisplayName="反击成功时")
+	FBuffUpdateDelegaet FDekatkSussess;//C里不写，蓝图父类里写了
+	
+	UPROPERTY(BlueprintAssignable, BlueprintCallable, Category = "Crossing|Delegaet", DisplayName="反击失败时")
+	FBuffUpdateDelegaet FDekatkDefault;//C里不写，蓝图父类里写了
+	
+	UPROPERTY(BlueprintAssignable, BlueprintCallable, Category = "Crossing|Delegaet", DisplayName="反击结束时")
+	FBuffUpdateDelegaet FDekatkEnd;//C里不写，蓝图父类里写了
+	
 
 public: //函数
 	UFUNCTION(BlueprintCallable, Category = "Base|Fuc", DisplayName="检查自身数据")
 	void CheckSelfData();
 	
 	UFUNCTION(BlueprintCallable, Category = "Base|Fuc", DisplayName="生成守备数值")
-	bool PerformSpawn(FSkillData2D SkillPer);
+	bool PerformSpawn(FSkillData2D SkillPer,bool IsSkillAbandon);
 	
 	UFUNCTION(BlueprintCallable, Category = "Base|Fuc", DisplayName="生成守备数值-核心代码")
 	bool PerformSpawnCore(EPreformType Preform,bool IsSkillAbandon,float Value);
@@ -434,6 +453,9 @@ public: //函数
 	UFUNCTION(BlueprintCallable, Category = "Base|Fuc", DisplayName="技能释放前置")
 	bool SkillOverFront(FSkillData2D Skillindex);
 	
+	UFUNCTION(BlueprintCallable, Category = "Base|Fuc", DisplayName="反击判断")
+	bool DefAtkJudge();
+	
 	/**
 	 * 触发摄像机的位置移动和缩放旋转
 	 * @param LocOffset 新的位置
@@ -455,6 +477,9 @@ public: //函数
 	
 	UFUNCTION(BlueprintCallable, Category = "Base|Fuc", DisplayName="转换守备")
 	void TranslatePreform(EPreformType NewPreform,bool IsSkillAbandon ,float NewValue);
+	
+	UFUNCTION(BlueprintCallable,BlueprintPure, Category = "Base|Fuc", DisplayName="平均等级")
+	int SplitLevel();
 
 public: //自定义事件
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, DisplayName="角色开始行动")
@@ -577,4 +602,10 @@ public: //自定义事件
 
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, DisplayName="成功治疗时")
 	void HealSuccess(ACrossvoid2DatkNew* DmWho);
+	
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, DisplayName="对方向目标移动时")
+	void MoveToTarget(ACrossvoid2DatkNew* WhoMove);
+	
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, DisplayName="反击结果")
+	void DefatkResult();
 };

@@ -93,12 +93,11 @@ void ACrossvoid2DatkNew::CheckSelfData()
 	}
 }
 
-bool ACrossvoid2DatkNew::PerformSpawn(FSkillData2D SkillPer)
+//这个布尔返回的是什么，false是技能不可用,Core改为了成功生成就true
+bool ACrossvoid2DatkNew::PerformSpawn(FSkillData2D SkillPer,bool IsSkillAbandon)
 {
 	//计算技能的可用形态
 	int CharShapeNow = SkillPer.SkillState.Num()-1 < CharShape ? SkillPer.SkillState.Num()-1 : CharShape;
-	//判断这个技能是被丢弃的吗
-	bool IsSkillAbandon = SkillPer.SkillState[CharShapeNow] == E2DSkillType::Abandon; 
 	
 	//如果技能可用，就生成守备
 	if (SkillPer.PreSkillValue.IsValidIndex(CharShapeNow))
@@ -143,7 +142,7 @@ bool ACrossvoid2DatkNew::PerformSpawnCore(EPreformType Preform,bool IsSkillAband
 		DefenseUIInitialize(PreformType, PhyDefense, MagDefense); //触发守备UI初始化
 
 		DefAtkPhy = PhyDefenseRate > MagDefenseRate; //使用哪种类型反击
-		return IsSkillAbandon;
+		return true;
 		
 	case EPreformType::Attack:
 		//触发对应委托
@@ -169,7 +168,7 @@ bool ACrossvoid2DatkNew::PerformSpawnCore(EPreformType Preform,bool IsSkillAband
 		DefenseUIInitialize(PreformType, PhyDefense, MagDefense); //触发守备UI初始化
 
 		DefAtkPhy = PhyDefenseRate > MagDefenseRate; //使用哪种类型反击
-		return IsSkillAbandon;
+		return true;
 		
 	case EPreformType::Dodge:
 		//触发对应委托
@@ -186,7 +185,7 @@ bool ACrossvoid2DatkNew::PerformSpawnCore(EPreformType Preform,bool IsSkillAband
 		
 		Dodges = (IsSkillAbandon ? PhyDefenseRate * 2 : PhyDefenseRate);
 		DefenseUIInitialize(PreformType, Dodges, 0); //触发守备UI初始化
-		return IsSkillAbandon;
+		return true;
 	default: return false;
 	}
 }
@@ -271,9 +270,9 @@ void ACrossvoid2DatkNew::AtkCalculate(int SkSel, float& Phy1, float& Mag1)
 	float MagRate = 0;
 	PhyRate = SkillBuffer.SkillRate[CharShape].PhyLVrate[CharSelfData.SkillLevel[SkSel - 1]];
 	MagRate = SkillBuffer.SkillRate[CharShape].MagLVrate[CharSelfData.SkillLevel[SkSel - 1]];
-	//根据攻击力和倍率计算伤害
-	Phy1 = CharSelfData.Attack * PhyRate;
-	Mag1 = CharSelfData.Attack * MagRate;
+	//根据攻击力和倍率计算伤害(被出伤点倍率影响)
+	Phy1 = CharSelfData.Attack * (PhyRate + RateAdd);
+	Mag1 = CharSelfData.Attack * (MagRate + RateAdd);
 }
 
 void ACrossvoid2DatkNew::CriticalCalculate(float Phy2IN, float Mag2IN, float& Phy3Out, float& Mag3Out, bool& IsCritical)
@@ -294,8 +293,9 @@ void ACrossvoid2DatkNew::DefenseCalculate(float Phy2IN, float Mag2IN, float& Phy
 		return;
 	}
 	IsCure = false;
-	Phy3Out = Phy2IN * (1 - CharSelfData.PhyDefense);
-	Mag3Out = Mag2IN + (1 - CharSelfData.MagDefense);
+	//计算经过防御的倍率（被入伤点倍率影响）
+	Phy3Out = Phy2IN * ((1 - CharSelfData.PhyDefense) + RateMinus);
+	Mag3Out = Mag2IN * ((1 - CharSelfData.MagDefense) + RateMinus);
 }
 
 bool ACrossvoid2DatkNew::PreformUse(float Phy, float Mag)
@@ -361,9 +361,11 @@ bool ACrossvoid2DatkNew::SkillOverFront(FSkillData2D Skillindex)
 {
 	//CustomTimeDilation = TargetDilation;//技能开始时的速度
 	GetAnimInstance()->StopAllAnimationOverrides(); //先停止所有播放中的动画
-	//以后什么时候会加一个死亡判断（现在还不做）
-		
-	if (PerformSpawn(Skillindex)) //触发守备生成
+	//触发守备生成(其实是这里传入丢弃判断最好)
+	bool IsSkillAbandon = Skillindex.SkillState[CharShape] == E2DSkillType::Abandon;
+	PerformSpawn(Skillindex,IsSkillAbandon);
+	//判断这个技能是被丢弃的吗
+	if (IsSkillAbandon)
 	{
 		GetAnimInstance()->PlayAnimationOverride(ClickSeq[CharShape], "DefaultSlot", 1.0f, 0.0f);
 		SkillDrop(); //触发丢弃技能
@@ -371,13 +373,19 @@ bool ACrossvoid2DatkNew::SkillOverFront(FSkillData2D Skillindex)
 	}
 	else//如果正常攻击的话，就开始判断反击
 	{
-		if (NotBreak)//自己不能被打断
-		{
-			return true;
-		}
-		//自己是反击类型吗
-		if(PreformType == EPreformType::Attack)
-		{
+		return DefAtkJudge();
+	}
+}
+
+bool ACrossvoid2DatkNew::DefAtkJudge()
+{
+	if (NotBreak)//自己不能被打断
+	{
+		return true;
+	}
+	//自己是反击类型吗
+	if(PreformType == EPreformType::Attack)
+	{
 		for (const auto& Target : MapsIN)//遍历所有目标
 		{
 			//判断目标有效
@@ -405,7 +413,7 @@ bool ACrossvoid2DatkNew::SkillOverFront(FSkillData2D Skillindex)
 						CriticalCalculate(PhyIN, MagIN, DefAtkPhyDM, DefAtkMagDM, DefCriticalis);
 
 						//计算击飞程度
-						DefAtkFlyout = AtkRate * 1500; 
+						DefAtkFlyout = AtkRate * 1500 * DefAtkFlyoutBase; 
 					
 						//清空双方的守备状态
 						PhyDefense = MagDefense = Dodges = 0; //全部归零
@@ -425,13 +433,11 @@ bool ACrossvoid2DatkNew::SkillOverFront(FSkillData2D Skillindex)
 			}
 			
 				
-			}
 		}
-		//敌方都没有反击可以触发，正常走
-		return true;
 	}
+	//敌方都没有反击可以触发，正常走
+	return true;
 }
-
 
 
 void ACrossvoid2DatkNew::CameraShow(FVector LocOffset, FRotator RotOffset, float Lenth, float Speed)
@@ -518,6 +524,25 @@ void ACrossvoid2DatkNew::TranslatePreform(EPreformType NewPreform,bool IsSkillAb
 	}
 	//生成守备
 	PerformSpawnCore(NewPreform,IsSkillAbandon,NewValue);
+}
+
+int ACrossvoid2DatkNew::SplitLevel()
+{
+	float AllSK = 0;
+	//总和所有技能等级
+	for (auto Skbuffer : CharSelfData.SkillLevel)
+	{
+		AllSK += Skbuffer;
+	}
+	return AllSK/4;
+}
+
+void ACrossvoid2DatkNew::DefatkResult_Implementation()
+{
+}
+
+void ACrossvoid2DatkNew::MoveToTarget_Implementation(ACrossvoid2DatkNew* WhoMove)
+{
 }
 
 void ACrossvoid2DatkNew::ExtraAttack_Implementation()
@@ -634,6 +659,9 @@ void ACrossvoid2DatkNew::OtherRoundEnd_Implementation()
 	DefatkTarget = nullptr;//清空反击目标
 	FinalTargets = {};//清空被覆盖的最终目标
 	ExtraTargets = {};//清空额外攻击容量
+	SKindex = 0;//当前技能索引归零
+	RateAdd = 0;//出伤点倍率归零
+	RateMinus = 0;//入伤点倍率归零
 }
 
 void ACrossvoid2DatkNew::OnMoveEnd_Implementation()
@@ -677,6 +705,9 @@ void ACrossvoid2DatkNew::EndSelfTurn_Implementation()
 	// 设置角色的旋转角度
 	K2_SetActorRotation(FRotator(0, (Face ? 180.0f : 0.0f), 0), false);
 	NotBreak = false;
+	SKindex = 0;
+	RateAdd = 0;
+	RateMinus = 0;
 	CustomTimeDilation = 1.0f;
 	FActionEnd.Broadcast(); //触发结束自身行动的委托
 }
@@ -708,6 +739,7 @@ void ACrossvoid2DatkNew::SK5Start_Implementation()
 {
 	if (SkillOverFront(SkillSlot5))
 	{
+		SKindex = 5;
 		SK5StartMove(); //触发移动
 	}
 }
@@ -716,6 +748,7 @@ void ACrossvoid2DatkNew::SK4Start_Implementation()
 {
 	if (SkillOverFront(SkillSlot4))
 	{
+		SKindex = 4;
 		SK4StartMove(); //触发移动
 	}
 }
@@ -724,6 +757,7 @@ void ACrossvoid2DatkNew::SK3Start_Implementation()
 {
 	if (SkillOverFront(SkillSlot3))
 	{
+		SKindex = 3;
 		SK3StartMove(); //触发移动
 	}
 }
@@ -732,6 +766,7 @@ void ACrossvoid2DatkNew::SK2Start_Implementation()
 {
 	if (SkillOverFront(SkillSlot2))
 	{
+		SKindex = 2;
 		SK2StartMove(); //触发移动
 	}
 }
@@ -740,6 +775,7 @@ void ACrossvoid2DatkNew::SK1Start_Implementation()
 {
 	if (SkillOverFront(SkillSlot1))
 	{
+		SKindex = 1;
 		SK1StartMove(); //触发移动
 	}
 }
@@ -753,8 +789,11 @@ void ACrossvoid2DatkNew::CharActionStart_Implementation()
 {
 	CheckSelfData();//检查自身数据
 	FActionStart.Broadcast(); //触发回合开始时的委托
-	DefatkTarget = nullptr;//清空反击目标
 	SelfActive = true;//我在行动
+	DefatkTarget = nullptr;//清空反击目标
+	SKindex = 0;//重置当前技能索引
+	RateAdd = 0;
+	RateMinus =0;
 	//播放站街动画
 	GetAnimInstance()->PlayAnimationOverride(ClickSeq[CharShape], "DefaultSlot", 1.0f, 0.0f);
 }
