@@ -11,6 +11,8 @@
 class UMediaSource;
 class UCameraComponent;
 class USpringArmComponent;
+class UDreamTaskType;
+
 //2D守备类型
 UENUM(BlueprintType)
 enum class EPreformType: uint8
@@ -21,9 +23,7 @@ enum class EPreformType: uint8
 	Dodge = 3 UMETA(DisplayName="闪避"),
 };
 
-
-class UDreamTaskType;
-//物理异能技能等级对应倍率
+//物理异能技能等级对应倍率,额外倍率表
 USTRUCT(BlueprintType)
 struct FRateSubPhymag
 {
@@ -34,23 +34,6 @@ struct FRateSubPhymag
 	/* 异能技能等级对应倍率 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	TMap<int, float> MagLVrate = {{1, 1.00f}, {2, 1.00f}, {3, 1.00f}, {4, 1.00f}, {5, 1.00f}};
-};
-
-//额外倍率表(如果以后要改超出的，应该也要改这个)
-USTRUCT(Blueprintable)
-struct FRateVSskill : public FTableRowBase
-{
-	GENERATED_BODY()
-	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category="Rate", DisplayName="等级1")
-	float Rate1;
-	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category="Rate", DisplayName="等级2")
-	float Rate2;
-	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category="Rate", DisplayName="等级3")
-	float Rate3;
-	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category="Rate", DisplayName="等级4")
-	float Rate4;
-	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category="Rate", DisplayName="等级5")
-	float Rate5;
 };
 
 USTRUCT(Blueprintable)
@@ -497,6 +480,12 @@ public: //函数
 	UFUNCTION(BlueprintCallable,BlueprintPure, Category = "Base|Fuc", DisplayName="平均等级")
 	int SplitLevel();
 	
+	UFUNCTION(BlueprintCallable,BlueprintPure, Category = "Base|Fuc", DisplayName="从倍率表获取倍率")
+	void GetRateFromSplit(FRateSubPhymag Target,float& PhyRate,float& MagRate);
+	
+	UFUNCTION(BlueprintCallable,BlueprintPure, Category = "Base|Fuc", DisplayName="从倍率表获取基础伤害")
+	void GetDamageFromSplit(FRateSubPhymag Target,float& Phy,float& Mag);
+	
 	//true是1P
 	UFUNCTION(BlueprintCallable,BlueprintPure, Category = "Base|Fuc", DisplayName="获取敌方1P2P")
 	bool Enemy1P2P();
@@ -619,6 +608,9 @@ public: //自定义事件
 
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, DisplayName="成功打出伤害时")
 	void HitSuccess(ACrossvoid2DatkNew* DmWho);
+	
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, DisplayName="伤害被格挡时")
+	void HitDefeat(ACrossvoid2DatkNew* WhoDefense);
 
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, DisplayName="成功治疗时")
 	void HealSuccess(ACrossvoid2DatkNew* DmWho);

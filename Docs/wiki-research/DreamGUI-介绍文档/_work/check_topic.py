@@ -23,7 +23,10 @@ import sys
 
 EXTS = ("h", "cpp", "md", "json", "cs", "ini",
         "py", "ps1", "csv", "txt", "ush", "usf", "uplugin", "dss", "dsc")
-PATH_RE = re.compile(r"->\s*([^\s:]+\.(?:" + "|".join(EXTS) + r"))(?::(\d+)(?:-(\d+))?)?")
+# ⚠️ 备选必须长在前：正则的 | 取第一个能匹配的分支，`cs` 排在 `csv` 前面时
+#    会把 `module-owners.csv` 截成 `module-owners.cs`（实测漏判「文件不存在」）。
+_EXTS_ORDERED = sorted(EXTS, key=len, reverse=True)
+PATH_RE = re.compile(r"->\s*([^\s:]+\.(?:" + "|".join(_EXTS_ORDERED) + r"))(?::(\d+)(?:-(\d+))?)?")
 
 # 角标前缀 -> (账本相对路径, 该账本内部编号前缀)
 LEDGERS = {

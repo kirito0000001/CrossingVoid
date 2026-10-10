@@ -325,6 +325,7 @@ bool ACrossvoid2DatkNew::PreformUse(float Phy, float Mag)
 		MagDefense -= Mag;
 		DefenseTrigger(); //触发防御动画
 		DefenseUIUpdate(PhyDefense, MagDefense, 0); //更新UI
+		Dmer->HitDefeat(this);//伤害被格挡时
 		return true;
 	case EPreformType::Attack:
 		if (PhyDefense < Phy || MagDefense < Mag) //如果有任何一个盾破了，就直接碎守备
@@ -339,6 +340,7 @@ bool ACrossvoid2DatkNew::PreformUse(float Phy, float Mag)
 		MagDefense -= Mag;
 		DefenseTrigger(); //触发防御动画
 		DefenseUIUpdate(PhyDefense, MagDefense, 0); //更新UI
+		Dmer->HitDefeat(this);//伤害被格挡时
 		return true;
 	case EPreformType::Dodge:
 		if (Dodges <= 0) //还有闪避的次数吗
@@ -351,6 +353,7 @@ bool ACrossvoid2DatkNew::PreformUse(float Phy, float Mag)
 		Dodges--; //消耗一次
 		DefenseDodgeTrigger(); //触发闪避动画
 		DefenseUIUpdate(PhyDefense, MagDefense, Dodges); //更新UI
+		Dmer->HitDefeat(this);//伤害被格挡时
 		return true;
 	default:
 		return false;
@@ -534,12 +537,32 @@ int ACrossvoid2DatkNew::SplitLevel()
 	{
 		AllSK += Skbuffer;
 	}
-	return AllSK/4;
+	return AllSK/5;
+}
+
+void ACrossvoid2DatkNew::GetRateFromSplit(FRateSubPhymag Target,float& PhyRate,float& MagRate)
+{
+	PhyRate = Target.PhyLVrate.FindRef(SplitLevel());
+	MagRate = Target.MagLVrate.FindRef(SplitLevel());
+}
+
+void ACrossvoid2DatkNew::GetDamageFromSplit(FRateSubPhymag Target, float& Phy, float& Mag)
+{
+	float RatePhy = 0;
+	float RateMag = 0;
+	GetRateFromSplit(Target,RatePhy,RateMag);
+	
+	Phy = CharSelfData.Attack * (RatePhy + RateAdd);
+	Mag = CharSelfData.Attack * (RateMag + RateAdd);
 }
 
 bool ACrossvoid2DatkNew::Enemy1P2P()
 {
 	return this->Tags[0] == "2P";
+}
+
+void ACrossvoid2DatkNew::HitDefeat_Implementation(ACrossvoid2DatkNew* DmWho)
+{
 }
 
 void ACrossvoid2DatkNew::DefatkResult_Implementation(ACrossvoid2DatkNew* Win,ACrossvoid2DatkNew* Lost)
