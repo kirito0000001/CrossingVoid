@@ -480,6 +480,10 @@ public: //函数
 	
 	UFUNCTION(BlueprintCallable,BlueprintPure, Category = "Base|Fuc", DisplayName="平均等级")
 	int SplitLevel();
+	
+	//true是1P
+	UFUNCTION(BlueprintCallable,BlueprintPure, Category = "Base|Fuc", DisplayName="获取敌方1P2P")
+	bool Enemy1P2P();
 
 public: //自定义事件
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, DisplayName="角色开始行动")
@@ -607,5 +611,5 @@ public: //自定义事件
 	void MoveToTarget(ACrossvoid2DatkNew* WhoMove);
 	
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, DisplayName="反击结果")
-	void DefatkResult();
+	void DefatkResult(ACrossvoid2DatkNew* Win,ACrossvoid2DatkNew* Lost);
 };

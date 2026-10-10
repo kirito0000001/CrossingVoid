@@ -1195,4 +1195,90 @@ UnrealEditor-Cmd.exe CrossingVoid.uproject -run=AtlasFXSetup -stdout -unattended
   可以 `reinterpret_cast` 之后 `LoadSynchronous()`）；
 * `AtlasFXEditor.Build.cs` 需要 **`Paper2DEditor`** 依赖（`FPaperFlipbookHelpers` / `UPaperFlipbookFactory`）。
 
+---
+
+## 22. 透明度交给粒子颜色：Scale Color 能控 Alpha 了（2026-10-10）
+
+**用户需求（原话）**："给这个特效播放插件做一下修改，让他能被 Scale Color 控制，或者其他办法，
+只要能控制 Alpha 就行"——用 `Scale Color` 模块淡出时，闪电一动不动。
+
+**根因**：`M_FXAtlasSheet` 的 `Opacity` 只接了贴图自己的 alpha：
+
+```
+m.Opacity = C.a;      // 旧
+```
+
+而 Niagara 的 `Scale Color` / `Color` 模块写的是 **`Particles.Color`**。两者之间本来就没有通路
+——模块改了颜色没人看，材质压根没读它。**不是 Scale Color 坏了，是材质没接这根线。**
+
+**改法（一行 + 一个节点）**：
+
+```
+float4 ParticleCol = UE.Expression(Class = "ParticleColor").RGBA;
+m.EmissiveColor = C.rgb;                 // 颜色保持贴图原色
+m.Opacity       = C.a * ParticleCol.a;   // 贴图 alpha × 粒子 alpha
+```
+
+⚠️ **`.dss` 不接受 `OutputType=`**（本次踩到）：`DShader/*.dss` 是 DreamShader **2.0 文本源**，
+`OutputType` / `ResultType` 是 **1.x（`.dsm` / `.dsf`）Graph 面**的参数。在 `.dss` 里写会报两条错：
+
+```
+M_FXAtlasSheet.dss(125,78): DSH4202: A string has no value in an expression; ...
+M_FXAtlasSheet.dss(125,65): DSH5213: 'UE.ParticleColor' has no pin or property called 'OutputType'.
+```
+
+正确写法就是和文件里那三个 `DynamicParameter` **同构**：`UE.Expression(Class = "X", 属性…)` +
+`.RGBA` 取满通道，宽度由节点自己的输出遮罩（mask pseudo-name `RGBA`）决定，不需要声明。
+
+**自验（新增手段，强烈建议以后都先跑）**：
+
+```
+pwsh -File Plugins/DreamShader/.skill/dsc.ps1 check Plugins/AtlasFX/DShader/M_FXAtlasSheet.dss
+```
+
+无头跑一遍 IR 校验、**不写任何资产**、约 25 秒，报错精确到行列。本次就是靠它先抓到
+`OutputType` 这条错再改对的（直接让编辑器编译会以「什么都没变」或一段难读的日志收场）。
+
+引擎链路（逐段核过源码）：
+
+| # | 环节 | 出处 |
+|---|---|---|
+| ① | 渲染器的颜色绑定**默认**就是 `Particles.Color`，不用手接 | `NiagaraMeshRendererProperties.cpp:644` / `NiagaraSpriteRendererProperties.cpp:296` `ColorBinding = FNiagaraConstants::GetAttributeDefaultBinding(SYS_PARAM_PARTICLES_COLOR)` |
+| ② | 粒子颜色进 VF 后插值到像素阶段 | 精灵：`NiagaraSpriteVertexFactory.ush:139`（插值器）→ `:354 Result.Particle.Color = Interpolants.Color`；网格：`NiagaraMeshVertexFactory.ush:101/:288/:787`（走 `COLOR1`） |
+| ③ | 材质里**必须用 Particle Color 节点**才读得到 | `UMaterialExpressionParticleColor::Compile` → `Compiler->ParticleColor()`（`MaterialExpressions.cpp:10086`）→ 外部代码块 `ParticleColor`，定义在 `Engine/Config/BaseMaterialExpressions.ini:1056` `Definition="Parameters.Particle.Color"`，**并顺带打开 `NEEDS_PARTICLE_COLOR`** —— ② 那几段插值代码全在这个宏里 |
+
+③ 是这条链最容易漏的一环：**不写节点，`NEEDS_PARTICLE_COLOR` 就是 0，顶点工厂根本不把粒子颜色插值出来**，
+粒子颜色到不了像素阶段。所以「模块写了 `Particles.Color` 却没反应」是必然的，不是玄学。
+
+**为什么只乘 Alpha、不乘 RGB**：
+
+- `Particles.Color` 默认纯白（渲染器兜底也是 `FVector4f(1,1,1,1)`：`NiagaraRendererSprites.cpp:573` /
+  `NiagaraRendererMeshes.cpp:1006`）⇒ 没人写它时这一乘法是**恒等变换**，存量特效一个字都不会变；
+- 但 `Scale Color` 的 `Scale RGBA Together` 模式会连 RGB 一起压暗。若把 RGB 也乘进来，
+  拿它做淡出的特效会同时被压成黑块（Translucent 下就是一块黑），与「控制 Alpha」的目标相反。
+- 要 RGB 也受控：把 `m.EmissiveColor` 那行改成 `C.rgb * ParticleCol.rgb`，且 `Scale Color` 用
+  `Scale Mode = RGB and Alpha Separately`。**当前刻意不做**。
+
+**用法（Niagara 侧，零改插件）**：在 `ParticleUpdate` 里 `Play_Sprite_Atlas` **之后**挂内置模块
+`Scale Color`（`/Niagara/Modules/Update/Color/ScaleColor`），`Scale Mode` 选
+`Scale RGBA Together`（此时 `Scale RGBA` 的 A 就是透明度）或 `RGB and Alpha Separately`
+（此时用 `Scale Alpha`），用常量 / 曲线驱动即可淡出。`Color` 模块、直接写 `Particles.Color` 同样有效。
+⚠️ 该模块的基准色取自出生时的颜色（`Particles.Initial.Color`），不是 `Particles.Color`
+——放在 `ParticleUpdate` 里不会形成自反馈回路。
+
+**落地与验证**：
+- 只改了 `Plugins/AtlasFX/DShader/M_FXAtlasSheet.dss` 一个文件；`.dss` 是**文本源**，
+  编译后覆盖同名资产 `/AtlasFX/M_FXAtlasSheet`，**15 个在用它的特效资产不需要任何改动**
+  （它们引用的是同一个材质路径）。
+- ⚠️ **改完别用 `dfx.ps1 build` 重建模板**：那条路会丢渲染器上命令工具补的 Sheet 属性绑定
+  （§20.2）。本次只动材质，不涉及模板。
+- ⚠️ DreamShader 有**开着材质编辑器就拒绝重编**的闸（`Docs/generation/regeneration.md`）：
+  要改这个材质，先把 `/AtlasFX/M_FXAtlasSheet` 的编辑器页签关掉。
+- **怎么让它生效**（三选一，都够）：
+  ① 在编辑器里打开 `Plugins/AtlasFX/DShader/M_FXAtlasSheet.dss` 保存一次；
+  ② 重启编辑器 —— 启动扫描按**源哈希**判定，改了源就会重建（`generation/ephemeral.md`
+     「the startup sweep no longer forces」一节：跳过只在哈希没变时发生）；
+  ③ 菜单 *Tools ▸ DreamShader ▸ Clean Generated Shaders*（会连带重编）。
+  编辑器里会打印 `'{ObjectPath}' exists as a saved asset, so it is rebuilt and saved on disk ...`。
+
 

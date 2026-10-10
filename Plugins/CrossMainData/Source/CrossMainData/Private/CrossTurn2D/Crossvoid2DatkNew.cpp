@@ -537,7 +537,12 @@ int ACrossvoid2DatkNew::SplitLevel()
 	return AllSK/4;
 }
 
-void ACrossvoid2DatkNew::DefatkResult_Implementation()
+bool ACrossvoid2DatkNew::Enemy1P2P()
+{
+	return this->Tags[0] == "2P";
+}
+
+void ACrossvoid2DatkNew::DefatkResult_Implementation(ACrossvoid2DatkNew* Win,ACrossvoid2DatkNew* Lost)
 {
 }
 

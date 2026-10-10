@@ -10,6 +10,11 @@
 // 铺满模式靠模块改写索引 1 复用同一套数学（Local 变成 TexCoord，UV 退化成整帧铺满），
 // 所以这个材质不需要任何开关。
 //
+// 透明度 = 贴图 alpha × 粒子颜色 alpha（Particle Color 节点的 A）。
+// ⇒ Niagara 侧用内置模块 Scale Color（Scale Alpha / Scale RGBA）或 Color 模块、
+//   或者直接写 Particles.Color.a，就能控制整个特效的淡入淡出（2026-10-10 加，
+//   细节与源码出处见函数体里的「粒子颜色」那一段注释）。
+//
 // 编译目标：/AtlasFX/M_FXAtlasSheet
 //
 // 2026-10-04 排查记录：「只有第 0 帧能显示」的真凶**不在这个材质里**，而是模块
@@ -87,9 +92,50 @@ export void M_FXAtlasSheet(inout material m)
     float4 CFallback = Sheet.Sample(UE.TexCoord(Index = 0));
     float4 C = lerp(CMain, CFallback, NoData);
 
+    // ── 粒子颜色：Alpha 通道交给 Niagara 侧控制（2026-10-10 加）────────────────
+    // 需求（用户原话）："让他能被 Scale Color 控制，或者其他办法，只要能控制 Alpha 就行"。
+    //
+    // 为什么原来控制不了：这个材质的 Opacity 只用了贴图自己的 alpha，而 Niagara 的
+    // Scale Color / Color 模块写的是 Particles.Color —— 两者本来就没有通路。
+    //
+    // 引擎链路（全部核过源码，不是猜的）：
+    //   ① 渲染器的颜色绑定默认就指向 Particles.Color，不用手接：
+    //      NiagaraMeshRendererProperties.cpp:644 / NiagaraSpriteRendererProperties.cpp:296
+    //      `ColorBinding = FNiagaraConstants::GetAttributeDefaultBinding(SYS_PARAM_PARTICLES_COLOR)`；
+    //   ② 粒子颜色进 VF 后被顶点工厂插值到像素阶段：
+    //      NiagaraSpriteVertexFactory.ush:139（顶点插值器）→ :354
+    //      `Result.Particle.Color = Interpolants.Color`（PS）；
+    //      NiagaraMeshVertexFactory.ush:101 / :288 / :787（同构，走 COLOR1 插值器）；
+    //   ③ 材质里要用 **Particle Color 节点** 才读得到它：
+    //      UMaterialExpressionParticleColor::Compile → Compiler->ParticleColor()
+    //      （MaterialExpressions.cpp:10086）→ 外部代码块 "ParticleColor"，
+    //      定义在 Engine/Config/BaseMaterialExpressions.ini:1056
+    //      `Definition="Parameters.Particle.Color"`，并顺带打开 NEEDS_PARTICLE_COLOR
+    //      （像素阶段）—— 上面 ② 那几段插值代码全在这个宏里，所以**不写这个节点，
+    //      粒子颜色根本不会传到像素**，这就是之前「改了 Scale Color 没反应」的机制。
+    //
+    // ⚠️ 只把 **Alpha** 乘进 Opacity，**故意不乘 RGB**：
+    //   Particles.Color 的默认值是纯白（渲染器兜底也是 FVector4f(1,1,1,1)，
+    //   NiagaraRendererSprites.cpp:573 / NiagaraRendererMeshes.cpp:1006），
+    //   所以「没人写它」时这一乘法是恒等变换，存量特效一个字都不会变。
+    //   但 Scale Color 的 "Scale RGBA Together" 模式会连 RGB 一起压暗 —— 若把 RGB 也乘进来，
+    //   用它做淡出的特效会同时被压成黑块（Translucent 下就是一块黑）。既然需求是「控制 Alpha」，
+    //   就只让 A 生效，RGB 保持贴图原色。**要 RGB 也受控**：把下面 EmissiveColor 那行
+    //   改成 `C.rgb * ParticleCol.rgb` 即可（记得 Scale Color 用 "RGB and Alpha Separately"）。
+    // ⚠️ 写法与上面三个动态参数**完全同构**：`Class=` + 属性 + `.RGBA` 取满通道。
+    //   这个 `.dss`（2.0 文本源）不接受 `OutputType=` —— 那是 1.x（`.dsm`/`.dsf`）Graph 面的参数；
+    //   在这里写它会报 DSH5213（'UE.ParticleColor' has no pin or property called 'OutputType'）
+    //   + DSH4202（字符串只能当**反射属性**的值）。
+    //   `.RGBA` 不是随手写的 swizzle：这个节点的输出是**具名**的
+    //   （MaterialExpressions.cpp:10074-10079：RGB / R / G / B / A / **RGBA**），
+    //   选名字为 `RGBA` 的那一路（mask 1,1,1,1）正好拿到完整 float4，所以不用声明宽度。
+    float4 ParticleCol = UE.Expression(Class = "ParticleColor").RGBA;
+
     // Unlit + Translucent 的最终色就是 EmissiveColor，再按 Opacity 做 alpha 混合
-    // （不透明处遮住背景、半透处保留渐变）。所以这里给「颜色 = 采样值、透明度 = 采样 alpha」，
-    // 采样 alpha 为 0 的地方（帧外、贴图透明区）完全不显示。
+    // （不透明处遮住背景、半透处保留渐变）。所以这里给「颜色 = 采样值、透明度 = 采样 alpha × 粒子 alpha」，
+    // 采样 alpha 为 0 的地方（帧外、贴图透明区）完全不显示；
+    // 粒子 alpha 为 0 的地方整个特效消失 —— 这就是 Niagara 侧 Scale Color 的「Scale Alpha」、
+    // 或 Color 模块 / 直接写 Particles.Color.a 能控制的那一路。
     m.EmissiveColor = C.rgb;
-    m.Opacity = C.a;
+    m.Opacity = C.a * ParticleCol.a;
 }
