@@ -36,6 +36,22 @@ struct FRateSubPhymag
 	TMap<int, float> MagLVrate = {{1, 1.00f}, {2, 1.00f}, {3, 1.00f}, {4, 1.00f}, {5, 1.00f}};
 };
 
+//额外倍率表(如果以后要改超出的，应该也要改这个)
+USTRUCT(Blueprintable)
+struct FRateVSskill : public FTableRowBase
+{
+	GENERATED_BODY()
+	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category="Rate", DisplayName="等级1")
+	float Rate1;
+	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category="Rate", DisplayName="等级2")
+	float Rate2;
+	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category="Rate", DisplayName="等级3")
+	float Rate3;
+	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category="Rate", DisplayName="等级4")
+	float Rate4;
+	UPROPERTY(BlueprintReadWrite, EditDefaultsOnly, Category="Rate", DisplayName="等级5")
+	float Rate5;
+};
 
 USTRUCT(Blueprintable)
 struct FSkillData2D : public FTableRowBase
