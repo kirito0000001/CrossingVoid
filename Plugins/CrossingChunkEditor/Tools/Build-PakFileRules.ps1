@@ -169,7 +169,10 @@ for ($i = $SectionIndex + 1; $i -lt $RuleLines.Count; $i++) {
 }
 
 if ($Chunks.Count -eq 0) {
-    throw "[检查失败] 段 [$RuleSection] 里一条 +Chunks= 都没解析到（规则文件：$RuleIni）"
+    # 段存在但 0 条规则是合法状态（比如用户把所有 chunk 都解散后准备重新分配）。
+    # 和编辑器侧的 FCrossingChunkRuleService::LoadRules 保持一致：不拦，放行打包。
+    # 没有自定义 chunk → 全部内容按下面的兜底规则进基础包（未分类也归 pakchunk0）。
+    $Warnings += "段 [$RuleSection] 里 0 条 +Chunks= —— 全部内容走兜底规则（未分类与引擎/插件内容都进 pakchunk0 基础包）"
 }
 
 # ============================ 校验 ============================

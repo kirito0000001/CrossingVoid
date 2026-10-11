@@ -380,11 +380,9 @@ bool FCrossingChunkRuleService::LoadRules(TArray<FCrossingChunkRule>& OutRules, 
 		OutRules.Add(MoveTemp(Rule));
 	}
 
-	if (OutRules.Num() == 0)
-	{
-		OutError = FString::Printf(TEXT("段 [%s] 里一条 +Chunks= 都没解析出来"), *GetRuleSection());
-		return false;
-	}
+	// 空规则集是合法状态（比如用户把所有 chunk 都解散后准备重新分配），
+	// 不能让"一条都没解析出来"变成错误，否则新建/指派 Chunk 的入口会被卡死。
+	// 文件不存在或段找不到才是错误；段存在但 0 条规则 → 返回空数组即可。
 
 	OutRules.Sort([](const FCrossingChunkRule& A, const FCrossingChunkRule& B) { return A.ChunkId < B.ChunkId; });
 	return true;

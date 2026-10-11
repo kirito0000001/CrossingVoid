@@ -52,7 +52,12 @@ public:
 	 */
 	static FString GetScriptPath(const FString& ScriptFileName);
 
-	/** 读出全部规则；失败时 OutError 带原因。 */
+	/**
+	 * 读出全部规则；失败时 OutError 带原因。
+	 *
+	 * 空规则集（段存在但 0 条 +Chunks=）返回 true，这是合法状态 ——
+	 * 比如用户把所有 chunk 解散后准备重新分配，此时需要允许新建 Chunk。
+	 */
 	static bool LoadRules(TArray<FCrossingChunkRule>& OutRules, FString& OutError);
 
 	/** 该目录「自己」有没有直接标记；有就返回那条规则。 */
