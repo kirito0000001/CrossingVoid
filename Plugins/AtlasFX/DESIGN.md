@@ -1120,27 +1120,39 @@ MeshRenderer 段注释都改成了「轴心在几何中心」，并写明"不要
 * **只放 Spawn**：位置逐帧累积，放 `ParticleUpdate` 会越跑越远；
 * **存量系统注意叠加**：若某系统的通知 `Offset` 里已经算过这 40，把模块里的 Z 改回 `0`，否则变 80。
 
-### 20.2 ⚠️ DFX 重建模板会清掉「Sheet 绑定」——重建后必须再跑一次命令工具
+### 20.2 ✅ DFX 重建模板会清掉「Sheet 绑定」——已修（2026-10-11），绑定写进文本了
 
 2026-10-06 踩到：为了让网格模板带上偏移模块，我用 `dfx.ps1 build` 重建了
 `DFX/Templates/NS_Atlas2D_Mesh.dfs` ⇒ 渲染器被重新生成 ⇒ **它上面的「Sheet 纹理槽」和
 「`Sheet` ← `User.Atlas.ResolvedTexture` 属性绑定」一起没了**。
 
-原因：那条绑定是 `AtlasFXSetupCommandlet::SeedRendererMaterialParameters()` **事后补上去的**
-（引擎里网格渲染器的自定义材质只能走 `OverrideMaterials` + `bOverrideMaterials`，而「材质参数 →
-属性绑定」这块 DFX 的 `.dfs` 表达不了）。DFX 重建 = 按文本重新生成渲染器 ⇒ 命令工具补的东西就没了。
+**当时的原因**：那条绑定是 `AtlasFXSetupCommandlet::SeedRendererMaterialParameters()` **事后补上去的**，
+因为当时判断「材质参数 → 属性绑定」这块 DFX 的 `.dfs` **表达不了**。DFX 重建 = 按文本重新生成渲染器
+⇒ 命令工具补的东西就没了。**症状**：从重建后的模板新建的网格特效渲染成**一整块惨白/纯色的大方块**
+（材质拿不到图集，UV 换算退化）；判别很简单 —— **只有重建之后新建的系统坏，更早的正常**。
 
-**症状**：从重建后的模板新建的网格特效渲染成**一整块惨白/纯色的大方块**（材质拿不到图集，
-UV 换算退化）。判别方法很简单 —— **只有重建之后新建的系统坏，更早的正常**。
+**现在不这么办了（2026-10-11）**：「表达不了」这个前提已经不成立。DreamFX 的反编译器把「有结构但没语法
+的属性值」原样当 JSON 字符串带出来（`DreamFXDecompiler.cpp:1009-1044` 的 `TryWriteJsonBlob`），
+生成侧对称地当 JSON 拼回去（`DreamFXGenerator.cpp:276-295`）—— 所以两个模板的渲染器块里现在**各写着
+一行 `MaterialParameters = "{...}"`**，装的就是那条 `Sheet` 纹理槽 + 属性绑定。
 
-**修法**：再跑一次命令工具（幂等，已有的会跳过）：
+实测（2026-10-11）：重建两个模板 → `1 built, 0 failed | 0 error(s), 0 warning(s)`，不再有 DFX8018 的
+lost 报告；再把资产反编译回来对照，那一行与文本**逐字符一致**（544 字符）；`dfx.ps1 verify` 两者都过。
+
+> ⇒ **规矩改了：重建模板不再需要跟一次 `-run=AtlasFXSetup`。** 绑定跟着文本走，改 `.dfs` 就是改绑定。
+
+**还需要命令工具的情况（兜底，幂等）**：
+
+- 手工在 Niagara 编辑器里给某个系统补了绑定，而那个系统**没有文本源**（例如 Misaka 那批手工搭的网格系统）；
+- 改了 AtlasFX 的 DI 子变量名（`ResolvedTexture`）或材质参数名（`Sheet`）—— 那时文本里那行 blob 要重新
+  导出对照：`dfx.ps1 decompile /AtlasFX/Templates/NS_Atlas2D_Mesh`，改完再 `build`。
 
 ```
 UnrealEditor-Cmd.exe CrossingVoid.uproject -run=AtlasFXSetup -stdout -unattended -nopause -nosplash
 ```
 
-日志里会逐个系统打印「补了 N 项」，坏的那些是 `补了 2 项`，正常的 `补了 0 项`。
-**规矩：凡是 `dfx.ps1 build` 重建过模板，之后必须跑一次 `-run=AtlasFXSetup`。**
+日志里会逐个系统打印「补了 N 项」，正常的 `补了 0 项`。缺口在 DreamFX 侧的关闭记录见
+`Plugins/DreamFX/Docs/tools/write-back-coverage.md` §2.1。
 
 ### 20.3 「必须先打开一次特效，别处才显示」——两个洞（2026-10-06 用户报）
 

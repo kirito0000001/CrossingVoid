@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
 
+struct FAssetData;   // CoreUObject/Public/AssetRegistry/AssetData.h（cpp 里包含完整定义）
+
 /**
  * 一条分块规则，对应 Config\DefaultCrossingChunk.ini 里的一行：
  *   +Chunks=(ChunkName="基础包",ChunkId=0,Folders=((Path="/Game/Base"),...),
@@ -11,6 +13,8 @@
 struct FCrossingChunkRule
 {
 	FString ChunkName;
+	/** 显示用分类（面板列表分组、右键菜单二级子菜单）；空 = 未分组。纯显示，不影响打包。 */
+	FString Category;
 	int32   ChunkId = INDEX_NONE;
 	TArray<FString> Folders;          // 形如 /Game/GameActor2D/SAO_Kirito
 	FString Comment;
@@ -80,6 +84,12 @@ public:
 	/** 改分块名字（号不动；名字只影响显示，不影响已发布的包）。 */
 	static bool RenameChunk(int32 ChunkId, const FString& NewName, FString& OutMessage);
 
+	/**
+	 * 改分块的显示分类（号不动；空串 = 未分组）。
+	 * 纯显示字段：面板列表分组、右键菜单二级子菜单用，打包完全不读它。
+	 */
+	static bool SetChunkCategory(int32 ChunkId, const FString& NewCategory, FString& OutMessage);
+
 	/** 解散一个分块：删掉这条规则，它下面的目录重新变成未归类。返回被删的规则（供撤销）。 */
 	static bool RemoveChunk(int32 ChunkId, FCrossingChunkRule& OutRemoved, FString& OutMessage);
 
@@ -113,9 +123,16 @@ private:
 	/** 把入口挂到「平台」菜单（`LevelEditor.MainMenu.Platforms`）里"打包项目"旁边。 */
 	void RegisterMainMenu();
 
-	/** 内容浏览器「文件夹右键」菜单扩展。 */
+	/** 内容浏览器「文件夹右键」（路径树）菜单扩展。 */
 	TSharedRef<FExtender> OnExtendPathContextMenu(const TArray<FString>& SelectedPaths);
 
+	/**
+	 * 内容浏览器「选中资产右键」（资产视图，右侧图块/列表）菜单扩展。
+	 * 把选中资产换算成所在目录后，复用文件夹那套菜单；多目录时走批量。
+	 */
+	TSharedRef<FExtender> OnExtendAssetContextMenu(const TArray<FAssetData>& SelectedAssets);
+
 	FDelegateHandle PathMenuExtenderHandle;
+	FDelegateHandle AssetMenuExtenderHandle;
 	FDelegateHandle MainMenuStartupHandle;
 };

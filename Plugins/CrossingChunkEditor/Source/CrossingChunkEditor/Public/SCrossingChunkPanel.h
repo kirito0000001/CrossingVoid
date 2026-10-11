@@ -34,7 +34,6 @@ public:
 	{
 		FString Folder;
 		int32 Files = 0;
-		bool bIsNew = true;
 	};
 
 	/** 地图勾选项（勾中的会拼成脚本的 -Maps；一个都不勾 = 用 DefaultGame.ini 的 +MapsToCook）。 */
@@ -69,6 +68,8 @@ private:
 	TSharedRef<SWidget> MakeUnclassRow(TSharedPtr<FUnclassFolder> Item);
 
 	FReply OnRefreshClicked();
+	/** 「重新扫描」未分类清单：实时对比当前规则与 AssetRegistry，不依赖打包报告。 */
+	FReply OnRescanUnclassClicked();
 	FReply OnPackClicked();
 	/** 《清除缓存》：删掉能再生的缓存目录（脚本的 -ClearCache），腾磁盘空间。 */
 	FReply OnClearCacheClicked();
@@ -88,6 +89,11 @@ private:
 	FReply OnDisbandClicked(int32 ChunkId);
 	FReply OnUndoDisbandClicked();
 	void OnNameCommitted(const FText& NewText, ETextCommit::Type CommitType, int32 ChunkId);
+	/** 提交分类变更（空 = 未分组）；刷新推迟到下一帧（下拉回调里不能当场重建整棵树）。 */
+	void CommitCategory(int32 ChunkId, const FString& NewCategory);
+	/** 分类下拉选了「新建分类…」：在旁边弹一个小输入框，回车即建。 */
+	void OpenNewCategoryPopup(int32 ChunkId);
+	void OnNewCategoryCommitted(const FText& NewText, ETextCommit::Type CommitType, int32 ChunkId);
 	FText GetSummaryText() const;
 	FText GetPackButtonText() const;
 	FText GetMapSummaryText() const;
@@ -149,6 +155,14 @@ private:
 	/** 读最近一次打包报告（没有就留空，页面只显示规则本身）。 */
 	void LoadReport();
 
+	/**
+	 * 实时扫 AssetRegistry，列出当前没被任何分块规则覆盖的资源目录。
+	 * 按「顶层未覆盖目录」归组：规则标记是继承的（父目录被标记则子目录也算已归类），
+	 * 所以未覆盖的目录必然整条祖先链都没标记 —— 归组收敛到 /Game 的第一层子目录，
+	 * 正好是「拆散后重新分配」的操作粒度。
+	 */
+	void RescanUnclassified();
+
 	/** 下拉项：中文标签 + 真正传给脚本的值。 */
 	struct FChoice
 	{
@@ -161,10 +175,13 @@ private:
 
 	TArray<TSharedPtr<FCrossingChunkRule>> Rows;
 	TSharedPtr<SVerticalBox> RowsBox;
+	/** 分类下拉的选项（所有行共用）：未分组 + 现有分类 + 「新建分类…」（nullptr 哨兵）。 */
+	TArray<TSharedPtr<FString>> CategoryOptions;
+	/** 变化列的统一宽度：跟随全表最宽的变化内容（各行同宽，解散按钮才能对齐）。 */
+	float DeltaColumnWidth = 110.f;
 	TArray<TSharedPtr<FUnclassFolder>> Unclassified;
 	TSharedPtr<SVerticalBox> UnclassBox;
 	TMap<int32, FReportChunk> ReportChunks;
-	FString ReportStamp;
 	FString StatusMessage;
 	int32 FolderTotal = 0;
 

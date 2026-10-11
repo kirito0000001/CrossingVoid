@@ -46,12 +46,17 @@ pakchunk0-Windows.utoc / .ucas ...
 
 扩展点 `FContentBrowserMenuExtender_SelectedPaths`，段名 `CrossingChunk`（「Chunk 分块」）。
 
+右侧资产视图里**选中资产的右键菜单**也有同一套入口（扩展点
+`FContentBrowserMenuExtender_SelectedAssets`，挂在「在文件夹视图中显示」那段的后面）：
+按「选中资产所在的目录」划块——单目录时和文件夹右键完全同一套菜单；
+跨了多个目录时走批量（整组目录划给一个 chunk，新建的名字取公共祖先的目录名）。
+
 菜单分三段：
 
 | 段 | 内容 |
 |---|---|
 | 状态行（只读） | `当前：Chunk 3 · 第三章-角色与主界面（本目录直接标记）`<br>`当前：Chunk 0 · 基础包（继承自 /Game/GameActor2D）`<br>`当前：未分类 —— 本次新增，会进新建的 Chunk 8` |
-| 指定为 Chunk ▸ | 列出所有现有 chunk（RadioButton，当前所属打勾）+ 最后一项 `新建 Chunk N · 「目录名」` |
+| 指定为 Chunk ▸ | 列出所有现有 chunk（RadioButton，当前所属打勾）+ 最后一项 `新建 Chunk N · 「目录名」`。<br>**有分类时**：每个分类一个二级子菜单（划过去展开，未分组垫底）；一个分类都没有 → 平铺（和从前一样） |
 | 取消本目录的标记 | 取消后重新跟随最近的上级目录；该目录是这个 chunk 的最后一个标记时，规则一并删掉 |
 
 状态行那三种文案是有意写死的：
@@ -77,28 +82,39 @@ pakchunk0-Windows.utoc / .ucas ...
 - 输出目录（`-ArchiveDir`）、地图摘要、玩家版本、基线版本（只读）、基线目录
 - 状态行：`报告：` / `产物：` / `基线：`
 - 选择地图（扫 `AssetRegistry` 里的 `World` 资产，带搜索框 + 重新扫描 + 全部不勾）
-- 规则列表：`号 | 名字（双击可改） | 目录数 | 文件数 | 体积 | 变化 | 解散`
+- 规则列表：`号 | 名字（双击可改） | 分类（可编辑） | 目录数 | 文件数 | 体积 | 变化 | 解散`，
+  有分类时按「分类 → ChunkId」分组显示（组间插只读标题行，未分组垫底）
 - 「运行设置（额外）」折叠区：Cook 进程数、基线位置
 
 **右栏**
 
-- 本次新增（未分类目录）清单 + 一键指派 + 定位
+- 本次变更（未分类资源）清单 + 重新扫描 + 一键指派 + 定位
 - 打包日志（实时，按行着色）
 
 ### 3. 规则列表
 
 - **双击改名**：提交后立刻写回 ini，右键菜单同步（`ChunkId` 不动——名字只影响显示，
   已经发出去的包不受影响）。
+- **分类列**：下拉选择——未分组 / 现有分类 / 「新建分类…」（弹出小输入框，回车即建）。
+  纯显示字段——面板列表按它分组排序、右键菜单按它开子菜单、「指派到」下拉带 `[分类]` 前缀，
+  **打包完全不读它**，ChunkId 一动不动。
 - **解散**：二次确认弹窗，删掉这条规则，它下面的目录回到未分类；确认框里明确写了「可以撤回」。
 - **撤销解散**：会话内保留一份被删的规则（`UndoRule`），点一下原样塞回去。
-- **文件数 / 体积 / 变化**：来自最近一次打包报告，`+新增 -删除 ~修改`（和上一次报告比）。
+- **文件数 / 体积 / 变化**：来自最近一次打包报告。体积自适应单位（B/KB/MB/GB，后缀带全）；
+  变化按 增（绿）/ 删（橙）/ 改（蓝）分块显示、只列非零项，全 0 明说「无变化」。
 
-### 4. 本次新增（未分类）清单一键指派
+### 4. 本次变更（未分类资源）清单一键指派
 
-清单来自「上一次打包报告」的 `unclassified` 段，但**渲染时会拿当前规则再核一遍**：
-已经被某个分块覆盖的，标成 `[已归类] → Chunk N · 名字（下次打包生效）`（绿色）。
+清单是**实时扫出来的**，不来自打包报告：对比当前规则和 `AssetRegistry`，
+列出「自身和所有祖先都没被规则标记」的资源目录（标记是继承的——父目录被标记，
+子目录就算已归类，和右键菜单状态行的语义一致）。
 
-不直接删掉这一行是有意的——用户刚点完指派，得看得见「它去哪了」。
+按「顶层未覆盖目录」归组：新资源落在已标记目录的下面时精确显示那个新目录；
+把 chunk 全部拆散重新分配时，清单自动收敛成 `/Game` 的第一层目录列表——
+正好是逐个重新分配的操作粒度。指派完一刷新，行就消失（没有陈旧数据，也就
+不需要以前那套「已归类」对账显示）。右上角有「重新扫描」手动触发。
+
+> 这个语义和打包脚本兜底规则（`CC_NewContent`）是一致的：没被规则认领的文件进新 chunk。
 
 旁边还有一个「指派到」下拉，不用跳回内容浏览器右键。它会先做一次 `RefreshRules()`，
 **但刷新推迟到下一帧**（`FTSTicker` + `TWeakPtr`）：因为回调正跑在 combo 自己的回调里，
@@ -201,7 +217,7 @@ Saved\Shaders        —— shader 缓存
 
 1. 加了资源 → 在内容浏览器右键它所在的目录 → 「指定为 Chunk」；
    或者**什么都不做**，让它进新 chunk（未分类 = 本次新增，不会污染基础包）。
-2. 打开《二游打包》页 → 确认「本次新增」清单和预期一致。
+2. 打开《二游打包》页 → 确认「本次变更（未分类资源）」清单和预期一致。
 3. 选目标、选模式、勾地图 → 开始打包。
 4. 打完看报告：每个 chunk 多少文件、多大体积、比上次变了多少。
 
@@ -219,10 +235,13 @@ Saved\Shaders        —— shader 缓存
 
 ```ini
 [/Script/CrossingChunk.CrossingChunkRuleSet]
-+Chunks=(ChunkName="基础包",ChunkId=0,Folders=((Path="/Game/BaseC"),(Path="/Game/MapS")),Priority=0,bIncludeInInstallPackage=True,ForceExcludeFolders=,Comment="随安装包发布。")
++Chunks=(ChunkName="基础包",Category="核心",ChunkId=0,Folders=((Path="/Game/BaseC"),(Path="/Game/MapS")),Priority=0,bIncludeInInstallPackage=True,ForceExcludeFolders=,Comment="随安装包发布。")
 +Chunks=(ChunkName="登录资源",ChunkId=4,Folders=((Path="/Game/AssetMaterial/ImageS/Login_Image"),(Path="/Game/UIWidget/LoginUI")),Priority=0,bIncludeInInstallPackage=False,ForceExcludeFolders=,Comment="登录相关图片与UI。")
 +GlobalExcludeFolders=
 ```
+
+`Category` 是可选的显示用字段（没有它 = 未分组），打包脚本按字段名正则抓值、
+会自动忽略它；只想分类、不想动别的，在面板的分类列里从下拉选一个（或「新建分类…」）。
 
 写回时的行为：**保留文件里其它段和注释，只替换 `+Chunks=` 那些行**，
 并在规则数变多时把新行插在 `+GlobalExcludeFolders=` 之前。新建 chunk 时
@@ -374,10 +393,7 @@ Saved\PackLogs\ChunkReports\<Win64-Client|Android-Client|Win64-Server>[-Quick]\l
 
 **③ 「撤销解散」只在当前编辑器会话内有效。** 关掉编辑器就没了（要更久的可逆性走 git）。
 
-**④ 「本次新增」清单来自上一次打包报告。** 刚打开、还没打过包时它是空的——
-面板会明说「还没有打包报告 —— 先在「平台」菜单里跑一次打包」。
-
-**⑤ 未在界面上暴露的字段。** `Priority` 和 `ForceExcludeFolders` 会原样保留在规则里，
+**④ 未在界面上暴露的字段。** `Priority` 和 `ForceExcludeFolders` 会原样保留在规则里，
 但不提供 UI（语义未验证，见「设计原则」最后一条的延伸：
 界面上每多一个开关，就多一个「它到底管不管用」的问题）。
 

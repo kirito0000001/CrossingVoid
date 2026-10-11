@@ -18,11 +18,11 @@
 //
 // 改这个文件后：pwsh -File Plugins/DreamFX/.skill/dfx.ps1 build DFX/Templates/NS_Atlas2D_Mesh.dfs
 //
-// ⚠️⚠️ 重建之后**必须再跑一次**命令工具，否则从模板新建的网格特效会渲染成一整块惨白方块：
-//   UnrealEditor-Cmd.exe CrossingVoid.uproject -run=AtlasFXSetup -stdout -unattended -nopause -nosplash
-//   原因：渲染器上那条「Sheet 纹理槽 + Sheet ← User.Atlas.ResolvedTexture 属性绑定」是命令工具
-//   （SeedRendererMaterialParameters）事后补的，DFX 的 .dfs 表达不了「材质参数 → 属性绑定」，
-//   而 DFX 重建 = 按文本重新生成渲染器 ⇒ 补的东西就没了。详见 Plugins/AtlasFX/DESIGN.md §20.2。
+// ✅ 材质绑定现在写在文本里了（2026-10-11）：渲染器块里的 `MaterialParameters = "{...}"` 一行带着
+//   「Sheet 纹理槽 + Sheet ← User.Atlas.ResolvedTexture 属性绑定」，重建会自己还原它，
+//   所以**不再需要**每次重建后跑一遍 `-run=AtlasFXSetup`（旧规矩见 git 历史与 Plugins/AtlasFX/DESIGN.md §20.2）。
+//   万一又出现「重建后新建的网格特效整块惨白」：先 `dfx.ps1 decompile /AtlasFX/Templates/NS_Atlas2D_Mesh`
+//   对照那一行是否与资产一致，再用 `-run=AtlasFXSetup` 兜底（幂等，已有的会跳过）。
 System(Name="Templates/NS_Atlas2D_Mesh", Root="Plugin.AtlasFX")
 {
     Settings = {
@@ -174,6 +174,23 @@ System(Name="Templates/NS_Atlas2D_Mesh", Root="Plugin.AtlasFX")
             // 网格渲染器构造函数默认是 true（NiagaraMeshRendererProperties.cpp:426），
             // 版本升级路径又会把它改成 false（:603），所以新旧资产值不一样。
             bSubImageBlend     = false;
+
+            // ── 材质参数 → 属性绑定：**必须写在这里**，否则重建就丢 ──────────────────────
+            // 这一行装的是渲染器上的「Sheet 纹理槽 + Sheet ← User.Atlas.ResolvedTexture 属性绑定」，
+            // 也就是 AtlasFX 的 DI 把图集喂给材质的唯一通路（引擎侧：NiagaraRenderer.cpp:509-577
+            // 每帧遍历 MaterialParameters.AttributeBindings → MatDyn->SetTextureParameterValue）。
+            //
+            // 它以前不在文本里：绑定由 AtlasFXSetupCommandlet::SeedRendererMaterialParameters()
+            // 事后补上，而 DFX 重建 = 按文本重新生成渲染器 ⇒ 补的东西就没了（症状：重建之后新建的
+            // 网格特效渲染成一整块惨白方块；只有重建之后新建的坏、更早的正常）。
+            //
+            // 现在写得进来了：DreamFX 的反编译器把「有结构但没语法的属性值」原样当 JSON 字符串带出来
+            // （DreamFXDecompiler.cpp 的 TryWriteJsonBlob，:1009-1044），生成侧对称地当 JSON 拼回去
+            // （DreamFXGenerator.cpp:276-295）—— 所以这段 blob 一旦在文本里，重建就能自己还原。
+            //
+            // 本行取自 `dfx.ps1 decompile /AtlasFX/Templates/NS_Atlas2D_Mesh`（2026-10-11）。
+            // 改了 AtlasFX 那边的 DI 子变量名（ResolvedTexture）或材质参数名（Sheet）就要重新导出对照。
+            MaterialParameters = "{\"attributeBindings\":[{\"materialParameterName\":\"Sheet\",\"niagaraVariable\":{\"name\":\"User.Atlas\",\"typeDefHandle\":{\"registeredTypeIndex\":126}},\"resolvedNiagaraVariable\":{\"name\":\"User.Atlas\",\"typeDefHandle\":{\"registeredTypeIndex\":126}},\"niagaraChildVariable\":{\"name\":\"ResolvedTexture\",\"typeDefHandle\":{\"registeredTypeIndex\":1}}}],\"scalarParameters\":[],\"vectorParameters\":[],\"textureParameters\":[{\"materialParameterName\":\"Sheet\",\"texture\":\"None\"}],\"staticBoolParameters\":[]}";
 
             // ── 朝向：**故意不写 FacingMode**，走默认的 Default（本地空间朝向）──────
             // 这是本工程网格特效的标准做法 —— 参考 /Game/GameActor2D/SAO_Kirito/ExAsset/Leng刀光，

@@ -4,10 +4,19 @@
 #include "NiagaraCompileHashVisitor.h"
 #include "NiagaraTypeRegistry.h"
 
-#if WITH_EDITOR
+// 这两个头**不能**跟着 WITH_EDITOR 一起关掉 —— 本文件在 Shipping（WITH_EDITOR=0）下也有
+// 需要完整类型的地方：
+//   * UTexture2D：兜底路径里的 GetSizeX()（:188）。
+//   * UPaperFlipbook：PostLoad 的日志（:258）和 ComputeSourceSignature 的非编辑器分支（:305）
+//     都要 `*Flipbook->GetPathName()`，而 UObject::GetPathName 要求类型完整；
+//     只留头文件里的前向声明会报 C2027「使用了未定义类型 UPaperFlipbook」。
+// 依赖本身不是问题：Paper2D 一直在 AtlasFX.Build.cs 的 PrivateDependencyModuleNames 里，
+// 与 bBuildEditor 无关；插件也被工程启用（CrossingVoid.uproject）。
 #include "Engine/Texture2D.h"
 #include "PaperFlipbook.h"
-#include "PaperSprite.h"
+
+#if WITH_EDITOR
+#include "PaperSprite.h" // 只有编辑器烘表要读 Sprite 的编辑器专用字段（GetSourceUV / GetOriginInSourceImageBeforeTrimming…）
 #endif
 
 DEFINE_LOG_CATEGORY_STATIC(LogAtlasFX, Log, All);
@@ -184,7 +193,17 @@ void UNiagaraDataInterfaceSpriteAtlas::RefreshFromSource()
 
 	if (AtlasTexture)
 	{
+#if WITH_EDITOR
+		// BlockOnAnyAsyncBuild() 是 UTexture 上的**编辑器专有**接口，Shipping 下不存在：
+		//   声明 Texture.h:2043-2056（整个包在 #if WITH_EDITOR 里）
+		//   实现 Texture.cpp:509-529（同一个开关）
+		//   引擎自己的两个调用点 Texture2D.cpp:819（PostLinkerChange）、:1512（TemporarilyDisableStreaming）
+		//     也都在 WITH_EDITOR 里
+		// 所以 Shipping 直接调它就是 C2039「不是 UTexture2D 的成员」。
+		// 跳过是对的：这里防的是「DDC 失效后贴图平台数据在后台异步编译、GetSizeX() 期间返回
+		// 替身贴图的 32×32」——那是编辑器行为；运行时没有异步编译，尺寸随平台数据一起就绪。
 		AtlasTexture->BlockOnAnyAsyncBuild();
+#endif
 		TextureSize = FIntPoint(AtlasTexture->GetSizeX(), AtlasTexture->GetSizeY());
 	}
 

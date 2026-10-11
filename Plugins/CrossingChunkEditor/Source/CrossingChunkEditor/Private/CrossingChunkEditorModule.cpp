@@ -1,5 +1,6 @@
 #include "CrossingChunkEditorModule.h"
 
+#include "AssetRegistry/AssetData.h"
 #include "ContentBrowserDelegates.h"
 #include "ContentBrowserModule.h"
 #include "Framework/Docking/TabManager.h"
@@ -115,12 +116,87 @@ namespace
 		return true;
 	}
 
-	FString ChunkLabel(int32 ChunkId, const FString& ChunkName)
+FString ChunkLabel(int32 ChunkId, const FString& ChunkName)
+{
+	return ChunkName.IsEmpty()
+		? FString::Printf(TEXT("Chunk %d"), ChunkId)
+		: FString::Printf(TEXT("Chunk %d · %s"), ChunkId, *ChunkName);
+}
+
+/** 按显示分类分组好的一组规则。 */
+struct FRuleCategoryGroup
+{
+	FString Name;                     // 空 = 未分组
+	TArray<FCrossingChunkRule> Rules;
+};
+
+/**
+ * 规则按分类分组：分类名字典序，「未分组」（空分类）垫底；组内按 ChunkId 排。
+ * 只用于显示（右键菜单子菜单、面板列表），ChunkId 本身不动。
+ */
+TArray<FRuleCategoryGroup> GroupRulesByCategory(const TArray<FCrossingChunkRule>& Rules)
+{
+	TMap<FString, TArray<FCrossingChunkRule>> Groups;
+	for (const FCrossingChunkRule& Rule : Rules)
 	{
-		return ChunkName.IsEmpty()
-			? FString::Printf(TEXT("Chunk %d"), ChunkId)
-			: FString::Printf(TEXT("Chunk %d · %s"), ChunkId, *ChunkName);
+		Groups.FindOrAdd(Rule.Category).Add(Rule);
 	}
+
+	TArray<FString> Names;
+	Groups.GetKeys(Names);
+	Names.Sort([](const FString& A, const FString& B)
+	{
+		const bool bAEmpty = A.IsEmpty();
+		const bool bBEmpty = B.IsEmpty();
+		if (bAEmpty != bBEmpty) { return bBEmpty; }   // 未分组永远垫底
+		return A < B;
+	});
+
+	TArray<FRuleCategoryGroup> Out;
+	for (const FString& Name : Names)
+	{
+		TArray<FCrossingChunkRule> Group = MoveTemp(Groups[Name]);
+		Group.Sort([](const FCrossingChunkRule& A, const FCrossingChunkRule& B) { return A.ChunkId < B.ChunkId; });
+		Out.Add({Name, MoveTemp(Group)});
+	}
+	return Out;
+}
+
+/**
+ * 把 chunk 条目塞进菜单：一个分类都没有 → 平铺（和从前完全一样）；
+ * 有分类 → 每个分类一个二级子菜单（划过去展开），未分组垫底。
+ * AddOneRule 负责单个条目长什么样（文件夹菜单是 RadioButton，批量菜单是普通项），
+ * 值拷贝进子菜单回调 —— 菜单是点开时才构建的，别按引用抓局部状态。
+ */
+void AddGroupedRuleSubmenus(FMenuBuilder& InMenu, const TArray<FCrossingChunkRule>& SortedRules,
+	const TFunction<void(FMenuBuilder&, const FCrossingChunkRule&)>& AddOneRule)
+{
+	const bool bAnyCategory = SortedRules.ContainsByPredicate(
+		[](const FCrossingChunkRule& Rule) { return !Rule.Category.IsEmpty(); });
+	if (!bAnyCategory)
+	{
+		for (const FCrossingChunkRule& Rule : SortedRules)
+		{
+			AddOneRule(InMenu, Rule);
+		}
+		return;
+	}
+
+	for (const FRuleCategoryGroup& Group : GroupRulesByCategory(SortedRules))
+	{
+		const FString Label = Group.Name.IsEmpty() ? TEXT("未分组") : Group.Name;
+		InMenu.AddSubMenu(
+			FText::FromString(Label),
+			FText::FromString(FString::Printf(TEXT("分类「%s」下 %d 个分块"), *Label, Group.Rules.Num())),
+			FNewMenuDelegate::CreateLambda([AddOneRule, Group](FMenuBuilder& GroupMenu)
+			{
+				for (const FCrossingChunkRule& Rule : Group.Rules)
+				{
+					AddOneRule(GroupMenu, Rule);
+				}
+			}));
+	}
+}
 
 	/** 右键菜单正文：状态行 + 指定为 Chunk + 取消标记。 */
 	void BuildFolderChunkMenu(const FString& Folder, FMenuBuilder& MenuBuilder)
@@ -181,17 +257,20 @@ namespace
 		TArray<FCrossingChunkRule> SortedRules = Rules;
 		SortedRules.Sort([](const FCrossingChunkRule& A, const FCrossingChunkRule& B) { return A.ChunkId < B.ChunkId; });
 
+		// 构建菜单时就算好：Direct 指向局部 Rules 的元素，子菜单是点开时才构建的，
+		// 那时栈上的 Rules 早就没了 —— 在 lambda 里解引用它是悬垂指针（既有隐患，顺手修掉）。
+		const int32 DirectChunkId = Direct ? Direct->ChunkId : INDEX_NONE;
+
 		MenuBuilder.AddSubMenu(
 			LOCTEXT("AssignSubmenu", "指定为 Chunk"),
 			LOCTEXT("AssignSubmenuTip", "把这个文件夹（含子目录）划给某个分块。"),
-			FNewMenuDelegate::CreateLambda([Folder, SortedRules, Direct, NextId, LeafName](FMenuBuilder& SubMenu)
+			FNewMenuDelegate::CreateLambda([Folder, SortedRules, DirectChunkId, NextId, LeafName](FMenuBuilder& SubMenu)
 			{
-				const int32 DirectChunkId = Direct ? Direct->ChunkId : INDEX_NONE;
-
-				for (const FCrossingChunkRule& Rule : SortedRules)
+				// 单个 chunk 条目（RadioButton，当前所属打勾）
+				auto AddOneRule = [Folder, DirectChunkId](FMenuBuilder& InMenu, const FCrossingChunkRule& Rule)
 				{
 					const int32 RuleId = Rule.ChunkId;
-					SubMenu.AddMenuEntry(
+					InMenu.AddMenuEntry(
 						FText::FromString(ChunkLabel(RuleId, Rule.ChunkName)),
 						FText::FromString(FString::Printf(TEXT("%d 个目录标记在这个分块上"), Rule.Folders.Num())),
 						FSlateIcon(),
@@ -205,7 +284,9 @@ namespace
 							FIsActionChecked::CreateLambda([DirectChunkId, RuleId] { return DirectChunkId == RuleId; })),
 						NAME_None,
 						EUserInterfaceActionType::RadioButton);
-				}
+				};
+				// 有分类 → 分类二级子菜单；没有 → 平铺（现状）
+				AddGroupedRuleSubmenus(SubMenu, SortedRules, AddOneRule);
 
 				SubMenu.AddMenuSeparator();
 				SubMenu.AddMenuEntry(
@@ -235,6 +316,192 @@ namespace
 				FCanExecuteAction::CreateLambda([Direct] { return Direct != nullptr; })));
 
 		MenuBuilder.EndSection();
+	}
+
+	/** 选中资产 → 所在目录集合（去重、排序；包名为空的条目跳过）。 */
+	TArray<FString> FoldersFromAssets(const TArray<FAssetData>& SelectedAssets)
+	{
+		TArray<FString> Folders;
+		for (const FAssetData& Asset : SelectedAssets)
+		{
+			if (Asset.PackageName.IsNone())
+			{
+				continue;
+			}
+			const FString Folder = FCrossingChunkRuleService::NormalizeFolderPath(
+				FPaths::GetPath(Asset.PackageName.ToString()));
+			if (!Folder.IsEmpty())
+			{
+				Folders.AddUnique(Folder);
+			}
+		}
+		Folders.Sort();
+		return Folders;
+	}
+
+	/**
+	 * 所有目录的公共祖先的最后一段，给批量新建的 chunk 起默认名。
+	 * 比如选了 /Game/BaseC/ExActorS 和 /Game/BaseC/ExCordLibrary → 「BaseC」。
+	 * 撑不起公共祖先（跨 /Game 顶层了）就叫「批量目录」，反正之后可以改名。
+	 */
+	FString CommonLeafName(const TArray<FString>& Folders)
+	{
+		FString Common = Folders[0];
+		for (const FString& Folder : Folders)
+		{
+			// Common 必须是 Folder 的目录前缀（后面紧跟 '/'，或两者完全相等）
+			while (!Folder.StartsWith(Common) ||
+				(Folder.Len() > Common.Len() && Folder[Common.Len()] != TEXT('/')))
+			{
+				const int32 Slash = Common.Find(TEXT("/"), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+				if (Slash == INDEX_NONE)
+				{
+					return TEXT("批量目录");
+				}
+				Common.LeftChopInline(Common.Len() - Slash);
+				if (Common.IsEmpty())
+				{
+					return TEXT("批量目录");
+				}
+			}
+		}
+		return FCrossingChunkRuleService::GetFolderLeafName(Common);
+	}
+
+	/** 选中资产跨了多个目录时的批量菜单：把整组目录一起划给一个 chunk。 */
+	void BuildBulkFoldersChunkMenu(const TArray<FString>& Folders, FMenuBuilder& MenuBuilder)
+	{
+		MenuBuilder.BeginSection(TEXT("CrossingChunk"), LOCTEXT("SectionAssets", "Chunk 分块"));
+
+		TArray<FCrossingChunkRule> Rules;
+		FString Error;
+		if (!FCrossingChunkRuleService::LoadRules(Rules, Error))
+		{
+			MenuBuilder.AddMenuEntry(
+				FText::FromString(FString::Printf(TEXT("规则文件读不了：%s"), *Error)),
+				FText::FromString(FCrossingChunkRuleService::GetRuleIniPath()),
+				FSlateIcon(),
+				FUIAction(FExecuteAction(), FCanExecuteAction::CreateLambda([] { return false; })));
+			MenuBuilder.EndSection();
+			return;
+		}
+
+		const int32 NextId = FCrossingChunkRuleService::NextChunkId(Rules);
+
+		int32 DirectCount = 0;
+		for (const FString& Folder : Folders)
+		{
+			if (FCrossingChunkRuleService::FindDirectRule(Rules, Folder) != nullptr)
+			{
+				++DirectCount;
+			}
+		}
+
+		// ---- 状态行（只读）----
+		MenuBuilder.AddMenuEntry(
+			FText::FromString(FString::Printf(
+				TEXT("批量：%d 个目录（其中 %d 个有直接标记）"), Folders.Num(), DirectCount)),
+			LOCTEXT("BulkStatusTip",
+				"把选中的资产按「所在目录」批量划块；目录里没另外标记的子目录跟随最近的上级。"),
+			FSlateIcon(),
+			FUIAction(FExecuteAction(), FCanExecuteAction::CreateLambda([] { return false; })));
+
+		MenuBuilder.AddMenuSeparator();
+
+		// ---- 指定为 Chunk：批量划给现有 chunk，或整组新建 ----
+		const FString NewChunkName = CommonLeafName(Folders);
+
+		TArray<FCrossingChunkRule> SortedRules = Rules;
+		SortedRules.Sort([](const FCrossingChunkRule& A, const FCrossingChunkRule& B) { return A.ChunkId < B.ChunkId; });
+
+		MenuBuilder.AddSubMenu(
+			LOCTEXT("AssignSubmenuBulk", "指定为 Chunk"),
+			LOCTEXT("AssignSubmenuBulkTip", "把选中的这批目录（含子目录）都划给某个分块。"),
+			FNewMenuDelegate::CreateLambda([Folders, SortedRules, NextId, NewChunkName](FMenuBuilder& SubMenu)
+			{
+				/** 对整组目录逐个执行同一个 Assign，汇总成一条通知。 */
+				auto AssignAll = [Folders](int32 ChunkId, const FString& ChunkName)
+				{
+					int32 OkCount = 0;
+					for (const FString& Folder : Folders)
+					{
+						FString Message;
+						if (FCrossingChunkRuleService::Assign(Folder, ChunkId, ChunkName, Message))
+						{
+							++OkCount;
+						}
+					}
+					FString Message = FString::Printf(
+						TEXT("已把 %d/%d 个目录划给 %s"),
+						OkCount, Folders.Num(), *ChunkLabel(ChunkId, ChunkName));
+					Notify(Message, OkCount == Folders.Num());
+				};
+
+				// 有分类 → 分类二级子菜单；没有 → 平铺（现状）。批量条目是普通项（无 RadioButton）
+				auto AddOneRule = [AssignAll](FMenuBuilder& InMenu, const FCrossingChunkRule& Rule)
+				{
+					const int32 RuleId = Rule.ChunkId;
+					InMenu.AddMenuEntry(
+						FText::FromString(ChunkLabel(RuleId, Rule.ChunkName)),
+						FText::FromString(FString::Printf(TEXT("%d 个目录标记在这个分块上"), Rule.Folders.Num())),
+						FSlateIcon(),
+						FUIAction(FExecuteAction::CreateLambda([AssignAll, RuleId, Name = Rule.ChunkName]()
+						{
+							AssignAll(RuleId, Name);
+						})));
+				};
+				AddGroupedRuleSubmenus(SubMenu, SortedRules, AddOneRule);
+
+				SubMenu.AddMenuSeparator();
+				SubMenu.AddMenuEntry(
+					FText::FromString(FString::Printf(
+						TEXT("新建 Chunk %d · 「%s」（%d 个目录）"), NextId, *NewChunkName, Folders.Num())),
+					LOCTEXT("AssignBulkNewTip",
+						"用这批目录的公共祖先当分块名字（之后可以改名）。没标记过的资源本来也会自动进新 chunk。"),
+					FSlateIcon(),
+					FUIAction(FExecuteAction::CreateLambda([AssignAll, NextId, NewChunkName]()
+					{
+						AssignAll(NextId, NewChunkName);
+					})));
+			}));
+
+		MenuBuilder.AddMenuSeparator();
+
+		MenuBuilder.AddMenuEntry(
+			LOCTEXT("RemoveBulk", "取消这些目录的标记"),
+			LOCTEXT("RemoveBulkTip", "有直接标记的目录会取消（重新跟随上级目录），没标记的目录跳过。"),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateLambda([Folders]()
+				{
+					int32 OkCount = 0;
+					for (const FString& Folder : Folders)
+					{
+						FString Message;
+						if (FCrossingChunkRuleService::RemoveAssignment(Folder, Message))
+						{
+							++OkCount;
+						}
+					}
+					FString Message = FString::Printf(TEXT("已取消 %d 个目录的标记"), OkCount);
+					Notify(Message, OkCount > 0);
+				}),
+				FCanExecuteAction::CreateLambda([DirectCount] { return DirectCount > 0; })));
+
+		MenuBuilder.EndSection();
+	}
+
+	/** 资产菜单入口：单目录 → 和文件夹右键完全同一套；多目录 → 批量。 */
+	void BuildFoldersChunkMenu(const TArray<FString>& Folders, FMenuBuilder& MenuBuilder)
+	{
+		if (Folders.Num() == 1)
+		{
+			BuildFolderChunkMenu(Folders[0], MenuBuilder);
+		}
+		else
+		{
+			BuildBulkFoldersChunkMenu(Folders, MenuBuilder);
+		}
 	}
 }
 
@@ -364,6 +631,7 @@ bool FCrossingChunkRuleService::LoadRules(TArray<FCrossingChunkRule>& OutRules, 
 		}
 
 		Rule.ChunkName = Quoted(Trim, TEXT("ChunkName"));
+		Rule.Category  = Quoted(Trim, TEXT("Category"));   // 可选字段；老规则没有它就是未分组
 		Rule.Comment   = Quoted(Trim, TEXT("Comment"));
 		Rule.bIncludeInInstallPackage =
 			Between(Trim, TEXT("bIncludeInInstallPackage="), TEXT(",")).Equals(TEXT("True"), ESearchCase::IgnoreCase);
@@ -457,8 +725,9 @@ FString FCrossingChunkRuleService::MakeRuleLine(const FCrossingChunkRule& Rule)
 	}
 
 	return FString::Printf(
-		TEXT("+Chunks=(ChunkName=\"%s\",ChunkId=%d,Folders=(%s),Priority=0,bIncludeInInstallPackage=%s,ForceExcludeFolders=,Comment=\"%s\")"),
+		TEXT("+Chunks=(ChunkName=\"%s\",Category=\"%s\",ChunkId=%d,Folders=(%s),Priority=0,bIncludeInInstallPackage=%s,ForceExcludeFolders=,Comment=\"%s\")"),
 		*Rule.ChunkName,
+		*Rule.Category,
 		Rule.ChunkId,
 		*Folders,
 		Rule.bIncludeInInstallPackage ? TEXT("True") : TEXT("False"),
@@ -626,6 +895,46 @@ bool FCrossingChunkRuleService::RenameChunk(int32 ChunkId, const FString& NewNam
 	return true;
 }
 
+bool FCrossingChunkRuleService::SetChunkCategory(int32 ChunkId, const FString& NewCategory, FString& OutMessage)
+{
+	TArray<FCrossingChunkRule> Rules;
+	FString Error;
+	if (!LoadRules(Rules, Error))
+	{
+		OutMessage = FString::Printf(TEXT("规则读取失败：%s"), *Error);
+		return false;
+	}
+
+	FCrossingChunkRule* Target = Rules.FindByPredicate([ChunkId](const FCrossingChunkRule& Rule)
+	{
+		return Rule.ChunkId == ChunkId;
+	});
+	if (!Target)
+	{
+		OutMessage = FString::Printf(TEXT("找不到 Chunk %d 对应的规则。"), ChunkId);
+		return false;
+	}
+
+	// 分类允许清空（空 = 未分组），也允许重复 —— 它只是显示层的分组键
+	Target->Category = NewCategory.TrimStartAndEnd();
+
+	if (!SaveRules(Rules, Error))
+	{
+		OutMessage = FString::Printf(TEXT("写入失败：%s"), *Error);
+		return false;
+	}
+
+	if (Target->Category.IsEmpty())
+	{
+		OutMessage = FString::Printf(TEXT("Chunk %d 已移出分类（未分组）"), ChunkId);
+	}
+	else
+	{
+		OutMessage = FString::Printf(TEXT("Chunk %d 已归入分类「%s」"), ChunkId, *Target->Category);
+	}
+	return true;
+}
+
 bool FCrossingChunkRuleService::RemoveChunk(int32 ChunkId, FCrossingChunkRule& OutRemoved, FString& OutMessage)
 {
 	TArray<FCrossingChunkRule> Rules;
@@ -771,6 +1080,15 @@ void FCrossingChunkEditorModule::StartupModule()
 	ContentBrowser.GetAllPathViewContextMenuExtenders().Add(Extender);
 	PathMenuExtenderHandle = Extender.GetHandle();
 
+	// 资产视图（右侧图块/列表）里「选中资产」的右键菜单：同样给 Chunk 分块入口。
+	// 引擎侧在 FAssetContextMenu::MakeContextMenu 里收 GetAllAssetViewContextMenuExtenders()
+	// （AssetContextMenu.cpp:162-188），payload 只含文件资产 —— 文件夹图块走别的路，
+	// 不会和上面路径树的菜单重复。
+	FContentBrowserMenuExtender_SelectedAssets AssetExtender;
+	AssetExtender.BindRaw(this, &FCrossingChunkEditorModule::OnExtendAssetContextMenu);
+	ContentBrowser.GetAllAssetViewContextMenuExtenders().Add(AssetExtender);
+	AssetMenuExtenderHandle = AssetExtender.GetHandle();
+
 	// 《二游打包》页：注册成一个可停靠页签。
 	// 入口不放「窗口」菜单（Hidden），而是挂到「平台」菜单里 —— 见 RegisterMainMenu()。
 	FGlobalTabmanager::Get()->RegisterNomadTabSpawner(
@@ -829,6 +1147,11 @@ void FCrossingChunkEditorModule::ShutdownModule()
 			{
 				return Delegate.GetHandle() == PathMenuExtenderHandle;
 			});
+		ContentBrowser.GetAllAssetViewContextMenuExtenders().RemoveAll(
+			[this](const FContentBrowserMenuExtender_SelectedAssets& Delegate)
+			{
+				return Delegate.GetHandle() == AssetMenuExtenderHandle;
+			});
 	}
 }
 
@@ -864,6 +1187,31 @@ TSharedRef<FExtender> FCrossingChunkEditorModule::OnExtendPathContextMenu(const 
 		FMenuExtensionDelegate::CreateLambda([Folder](FMenuBuilder& MenuBuilder)
 		{
 			BuildFolderChunkMenu(Folder, MenuBuilder);
+		}));
+
+	return Extender;
+}
+
+TSharedRef<FExtender> FCrossingChunkEditorModule::OnExtendAssetContextMenu(const TArray<FAssetData>& SelectedAssets)
+{
+	TSharedRef<FExtender> Extender = MakeShared<FExtender>();
+
+	const TArray<FString> Folders = FoldersFromAssets(SelectedAssets);
+	if (Folders.Num() == 0)
+	{
+		return Extender;
+	}
+
+	// 挂在「在文件夹视图中显示 / 在浏览器中显示」那一段后面（Explore）。
+	// ToolMenus 生成菜单时 BeginSection(Section.Name)（ToolMenus.cpp:1584），
+	// 段名就是 legacy 扩展钩子名，所以这里写段名能精确插进去。
+	Extender->AddMenuExtension(
+		"AssetContextExploreMenuOptions",
+		EExtensionHook::After,
+		nullptr,
+		FMenuExtensionDelegate::CreateLambda([Folders](FMenuBuilder& MenuBuilder)
+		{
+			BuildFoldersChunkMenu(Folders, MenuBuilder);
 		}));
 
 	return Extender;

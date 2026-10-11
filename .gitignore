@@ -60,6 +60,12 @@ Desktop.ini
 DShader/Decompiled/
 Content/Decompiled/
 
+# DreamShader 工程源根里自动生成的那部分：每次编译/cook 都会重建 .dreampass 注册表。
+# 本项目没有任何 .dsp，里面的 Registry*.ush 只是默认占位、不是源 —— 真开始写 .dsp 时按
+# Docs/generation/source-control.md 删掉这一行，那时它是"要入库的源"。
+# 只忽略这一层：DShader/ 下自己的 .dsm/.dss 与 Packages/ 照常可入库。
+DShader/.dreampass/
+
 # DreamFX/DreamShader 反编译产物（临时排查用，不入库）
 DFX/Decompiled/
 Plugins/ZDBridge/Content/Decompiled/

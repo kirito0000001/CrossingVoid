@@ -4,6 +4,7 @@
 #include "IContentBrowserSingleton.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Editor.h"                                          // GEditor->PlayEditorSound
+#include "Framework/Application/SlateApplication.h"          // FSlateApplication（新建分类的弹出输入框）
 #include "Framework/Notifications/NotificationManager.h"     // FSlateNotificationManager / FNotificationInfo
 #include "Widgets/Notifications/SNotificationList.h"         // SNotificationItem
 #include "Widgets/Input/SCheckBox.h"
@@ -542,20 +543,8 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 			]
 		]
 
-		// ---- 列头（宽度必须和下面每行一一对应，否则看着就是错位的） ----
-		+ SVerticalBox::Slot().AutoHeight().Padding(14.f, 2.f)
-		[
-			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot().AutoWidth()[SNew(SBox).WidthOverride(36.f)[SNew(STextBlock).Text(LOCTEXT("ColId", "号")).ColorAndOpacity(FSlateColor::UseSubduedForeground())]]
-			+ SHorizontalBox::Slot().AutoWidth().Padding(4.f, 0.f)[SNew(SBox).WidthOverride(170.f)[SNew(STextBlock).Text(LOCTEXT("ColName", "名字（双击可改）")).ColorAndOpacity(FSlateColor::UseSubduedForeground())]]
-			+ SHorizontalBox::Slot().AutoWidth().Padding(0.f, 0.f, 12.f, 0.f)[SNew(SSpacer)]
-			+ SHorizontalBox::Slot().AutoWidth()[SNew(SBox).WidthOverride(64.f)[SNew(STextBlock).Text(LOCTEXT("ColFolders", "目录")).ColorAndOpacity(FSlateColor::UseSubduedForeground())]]
-			+ SHorizontalBox::Slot().AutoWidth()[SNew(SBox).WidthOverride(80.f)[SNew(STextBlock).Text(LOCTEXT("ColFiles", "文件")).ColorAndOpacity(FSlateColor::UseSubduedForeground())]]
-			+ SHorizontalBox::Slot().AutoWidth()[SNew(SBox).WidthOverride(84.f)[SNew(STextBlock).Text(LOCTEXT("ColSize", "体积")).ColorAndOpacity(FSlateColor::UseSubduedForeground())]]
-			+ SHorizontalBox::Slot().AutoWidth().Padding(0.f, 0.f, 8.f, 0.f)[SNew(SBox).WidthOverride(110.f)[SNew(STextBlock).Text(LOCTEXT("ColDelta", "变化")).ToolTipText(LOCTEXT("ColDeltaTip", "+ 新增　- 删除　~ 修改（和上一次打包报告比）")).ColorAndOpacity(FSlateColor::UseSubduedForeground())]]
-		]
-
-		// ---- 规则列表 ----
+		// ---- 列头 + 规则列表（外面套一层横向滚动：列多到一屏放不下时底部出现横向滚动条，
+		//      平时变化列跟内容走很窄，根本用不到它） ----
 		+ SVerticalBox::Slot().FillHeight(1.f).Padding(8.f, 0.f)
 		[
 			SNew(SBorder)
@@ -563,9 +552,41 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 			.Padding(6.f)
 			[
 				SNew(SScrollBox)
+				.Orientation(Orient_Horizontal)
 				+ SScrollBox::Slot()
 				[
-					SAssignNew(RowsBox, SVerticalBox)
+					SNew(SVerticalBox)
+
+					// 列头（宽度必须和下面每行一一对应，否则看着就是错位的）
+					+ SVerticalBox::Slot().AutoHeight().Padding(14.f, 2.f)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().AutoWidth()[SNew(SBox).WidthOverride(36.f)[SNew(STextBlock).Text(LOCTEXT("ColId", "号")).ColorAndOpacity(FSlateColor::UseSubduedForeground())]]
+						+ SHorizontalBox::Slot().AutoWidth().Padding(4.f, 0.f)[SNew(SBox).WidthOverride(170.f)[SNew(STextBlock).Text(LOCTEXT("ColName", "名字（双击可改）")).ColorAndOpacity(FSlateColor::UseSubduedForeground())]]
+						+ SHorizontalBox::Slot().AutoWidth().Padding(0.f, 0.f, 4.f, 0.f)[SNew(SBox).WidthOverride(88.f)[SNew(STextBlock).Text(LOCTEXT("ColCategory", "分类")).ToolTipText(LOCTEXT("ColCategoryTip", "显示用分类：不影响打包。从下拉选，或选「新建分类…」")).ColorAndOpacity(FSlateColor::UseSubduedForeground())]]
+						+ SHorizontalBox::Slot().AutoWidth().Padding(0.f, 0.f, 12.f, 0.f)[SNew(SSpacer)]
+						+ SHorizontalBox::Slot().AutoWidth()[SNew(SBox).WidthOverride(64.f)[SNew(STextBlock).Text(LOCTEXT("ColFolders", "目录")).ColorAndOpacity(FSlateColor::UseSubduedForeground())]]
+						+ SHorizontalBox::Slot().AutoWidth()[SNew(SBox).WidthOverride(80.f)[SNew(STextBlock).Text(LOCTEXT("ColFiles", "文件")).ColorAndOpacity(FSlateColor::UseSubduedForeground())]]
+						+ SHorizontalBox::Slot().AutoWidth()[SNew(SBox).WidthOverride(92.f)[SNew(STextBlock).Text(LOCTEXT("ColSize", "体积")).ColorAndOpacity(FSlateColor::UseSubduedForeground())]]
+						+ SHorizontalBox::Slot().AutoWidth().Padding(0.f, 0.f, 8.f, 0.f)
+						[
+							SNew(SBox)
+							.WidthOverride_Lambda([this]() -> FOptionalSize { return DeltaColumnWidth; })
+							[
+								SNew(STextBlock).Text(LOCTEXT("ColDelta", "变化")).ToolTipText(LOCTEXT("ColDeltaTip", "增 = 新增文件，删 = 删除文件，改 = 内容有修改（和上一次打包报告比）")).ColorAndOpacity(FSlateColor::UseSubduedForeground())
+							]
+						]
+					]
+
+					// 行（纵向滚动）
+					+ SVerticalBox::Slot().FillHeight(1.f).Padding(8.f, 0.f)
+					[
+						SNew(SScrollBox)
+						+ SScrollBox::Slot()
+						[
+							SAssignNew(RowsBox, SVerticalBox)
+						]
+					]
 				]
 			]
 		]
@@ -576,12 +597,24 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 			[
 				SNew(SVerticalBox)
 
-		// ---- 未分类（本次新增） ----
+		// ---- 未分类（本次变更）----
 		+ SVerticalBox::Slot().AutoHeight().Padding(8.f, 6.f, 8.f, 2.f)
 		[
-			SNew(STextBlock)
-			.Text(LOCTEXT("UnclassTitle", "本次新增（未分类目录）—— 归类用内容浏览器右键"))
-			.Font(FCoreStyle::GetDefaultFontStyle("Bold", 11))
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("UnclassTitle", "本次变更（未分类资源）—— 归类用内容浏览器右键"))
+				.Font(FCoreStyle::GetDefaultFontStyle("Bold", 11))
+			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+			[
+				SNew(SButton)
+				.Text(LOCTEXT("RescanUnclass", "重新扫描"))
+				.ToolTipText(LOCTEXT("RescanUnclassTip", "重新扫一遍 AssetRegistry，列出当前没被任何分块规则覆盖的资源目录"))
+				.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
+				.OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnRescanUnclassClicked))
+			]
 		]
 		+ SVerticalBox::Slot().FillHeight(0.6f).Padding(8.f, 0.f, 8.f, 8.f)
 		[
@@ -621,19 +654,56 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 	RefreshStatus();
 }
 
+/**
+ * 「增 N / 删 N / 改 N」这一行的粗估宽度（默认字体：汉字≈13px、数字≈8px）。宁宽勿裁。
+ * 放在 RefreshRules 之前：它就是给 RefreshRules 算列宽用的，C++ 要求先声明后使用。
+ */
+static float EstimateDeltaWidthOf(const SCrossingChunkPanel::FReportChunk& Info)
+{
+	float Width = 0.f;
+	const auto Part = [&Width](int32 Count)
+	{
+		if (Count <= 0) { return; }
+		const int32 DigitCount = FString::Printf(TEXT("%d"), Count).Len();
+		Width += 13.f + 4.f + DigitCount * 8.f + 10.f;   // 汉字 + 空格 + 数字 + 块间距
+	};
+	Part(Info.Added);
+	Part(Info.Removed);
+	Part(Info.Modified);
+	if (Width <= 0.f) { Width = 40.f; }   // 「无变化」
+	return Width + 16.f;                  // 余量
+}
+
 void SCrossingChunkPanel::RefreshRules()
 {
+	// 重建列表会销毁旧行上的控件。如果有没关干净的孤儿弹层（下拉菜单/弹出输入框
+	// 还悬在半空，宿主却没了），它会一直挡在那儿吃掉点击——表现为某行的下拉
+	// 「点不开」、提示条卡着不走。重建前把菜单栈清干净（没菜单时是无害空操作）。
+	if (FSlateApplication::IsInitialized() && FSlateApplication::Get().AnyMenusVisible())
+	{
+		FSlateApplication::Get().DismissAllMenus();
+	}
+
 	Rows.Reset();
 	Unclassified.Reset();
 	ReportChunks.Reset();
-	ReportStamp.Empty();
 	FolderTotal = 0;
 	StatusMessage.Empty();
 
 	if (RowsBox.IsValid()) { RowsBox->ClearChildren(); }
 	if (UnclassBox.IsValid()) { UnclassBox->ClearChildren(); }
 
-	LoadReport();   // 先读报告：它决定每行多出来的"文件数/体积/变化"
+	LoadReport();           // 先读报告：它决定每行多出来的"文件数/体积/变化"
+	RescanUnclassified();   // 未分类清单实时扫（对比当前规则和 AssetRegistry，不再依赖报告）
+
+	// 变化列宽度 = 全表最宽的内容：平时跟着「无变化」走很窄（不用横向滚动），
+	// 某次报告变化很多时自己变宽（超宽由外层横向滚动条兜底）。
+	// 全表统一宽度，各行的「解散」按钮才能上下对齐。
+	DeltaColumnWidth = 56.f;
+	for (const TPair<int32, FReportChunk>& Pair : ReportChunks)
+	{
+		DeltaColumnWidth = FMath::Max(DeltaColumnWidth, EstimateDeltaWidthOf(Pair.Value));
+	}
 
 	TArray<FCrossingChunkRule> Rules;
 	FString Error;
@@ -643,8 +713,64 @@ void SCrossingChunkPanel::RefreshRules()
 		return;
 	}
 
-	for (const FCrossingChunkRule& Rule : Rules)
+	// 分类下拉的选项（所有行共用）：未分组 + 现有分类（字典序）+ 「新建分类…」。
+	// nullptr 哨兵表示「新建分类…」——它不是真分类，选中后弹输入框。
+	CategoryOptions.Reset();
+	CategoryOptions.Add(MakeShared<FString>());
 	{
+		TArray<FString> Categories;
+		for (const FCrossingChunkRule& Rule : Rules)
+		{
+			if (!Rule.Category.IsEmpty()) { Categories.AddUnique(Rule.Category); }
+		}
+		Categories.Sort();
+		for (const FString& Category : Categories)
+		{
+			CategoryOptions.Add(MakeShared<FString>(Category));
+		}
+	}
+	CategoryOptions.Add(TSharedPtr<FString>());
+
+	// 显示排序：有任一分类时 → 分类（字典序，未分组垫底）→ ChunkId，组间插只读标题行；
+	// 一个分类都没有 → 按号平铺（和从前一样）。排序只影响面板显示和「指派到」下拉的顺序，
+	// 规则文件里的 ChunkId 不动。
+	TArray<FCrossingChunkRule> Sorted = Rules;
+	const bool bAnyCategory = Sorted.ContainsByPredicate(
+		[](const FCrossingChunkRule& Rule) { return !Rule.Category.IsEmpty(); });
+	if (bAnyCategory)
+	{
+		Sorted.Sort([](const FCrossingChunkRule& A, const FCrossingChunkRule& B)
+		{
+			const bool bAEmpty = A.Category.IsEmpty();
+			const bool bBEmpty = B.Category.IsEmpty();
+			if (bAEmpty != bBEmpty) { return bBEmpty; }
+			if (!bAEmpty && !A.Category.Equals(B.Category, ESearchCase::CaseSensitive)) { return A.Category < B.Category; }
+			return A.ChunkId < B.ChunkId;
+		});
+	}
+
+	FString CurrentCategory;
+	bool bGroupOpen = false;
+	for (const FCrossingChunkRule& Rule : Sorted)
+	{
+		if (bAnyCategory && (!bGroupOpen || !Rule.Category.Equals(CurrentCategory, ESearchCase::CaseSensitive)))
+		{
+			CurrentCategory = Rule.Category;
+			bGroupOpen = true;
+			if (RowsBox.IsValid())
+			{
+				// 分组标题：加大一号、居中，跟数据行拉开档次
+				RowsBox->AddSlot().AutoHeight().Padding(0.f, 8.f, 0.f, 2.f)
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString(CurrentCategory.IsEmpty() ? TEXT("未分组") : CurrentCategory))
+					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 13))
+					.Justification(ETextJustify::Center)
+					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+				];
+			}
+		}
+
 		TSharedPtr<FCrossingChunkRule> Row = MakeShared<FCrossingChunkRule>(Rule);
 		Rows.Add(Row);
 		FolderTotal += Rule.Folders.Num();
@@ -667,9 +793,7 @@ void SCrossingChunkPanel::RefreshRules()
 		UnclassBox->AddSlot().AutoHeight().Padding(4.f)
 		[
 			SNew(STextBlock)
-			.Text(ReportStamp.IsEmpty()
-				? LOCTEXT("NoReport", "还没有打包报告 —— 先在「平台」菜单里跑一次打包，这里就会显示未分类清单和体积")
-				: LOCTEXT("NoUnclass", "没有未分类目录"))
+			.Text(LOCTEXT("NoUnclass", "没有未分类资源 —— 所有目录都在分块规则覆盖范围内"))
 			.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 		];
 	}
@@ -856,8 +980,6 @@ void SCrossingChunkPanel::LoadReport()
 		return;
 	}
 
-	ReportStamp = Root->GetStringField(TEXT("generatedAt"));
-
 	const TArray<TSharedPtr<FJsonValue>>* Chunks = nullptr;
 	if (Root->TryGetArrayField(TEXT("chunks"), Chunks))
 	{
@@ -879,20 +1001,111 @@ void SCrossingChunkPanel::LoadReport()
 		}
 	}
 
-	const TArray<TSharedPtr<FJsonValue>>* Unclass = nullptr;
-	if (Root->TryGetArrayField(TEXT("unclassified"), Unclass))
+	// 报告里的 unclassified 段不再读：右栏的未分类清单改由 RescanUnclassified() 实时扫出，
+	// 「拆散全部 chunk 后清单还是老的」这类漂移从根上消掉。报告本身（chunks/体积/变化）照旧。
+}
+
+void SCrossingChunkPanel::RescanUnclassified()
+{
+	Unclassified.Reset();
+
+	// 规则读不出来就不扫：空规则集（所有 chunk 被解散）会把整个 /Game 列出来 ——
+	// 那是真实情况，但要等规则文件本身能读时才列。
+	TArray<FCrossingChunkRule> Rules;
+	FString Error;
+	if (!FCrossingChunkRuleService::LoadRules(Rules, Error))
 	{
-		for (const TSharedPtr<FJsonValue>& Value : *Unclass)
+		return;
+	}
+
+	TSet<FString> RuleFolders;
+	for (const FCrossingChunkRule& Rule : Rules)
+	{
+		for (const FString& Folder : Rule.Folders)
 		{
-			const TSharedPtr<FJsonObject> Obj = Value->AsObject();
-			if (!Obj.IsValid()) { continue; }
-			TSharedPtr<FUnclassFolder> Item = MakeShared<FUnclassFolder>();
-			Item->Folder = Obj->GetStringField(TEXT("folder"));
-			Item->Files  = (int32)Obj->GetNumberField(TEXT("files"));
-			Item->bIsNew = Obj->GetBoolField(TEXT("isNew"));
-			Unclassified.Add(Item);
+			RuleFolders.Add(Folder);
 		}
 	}
+
+	// 这个目录（含自己）有没有被任何规则标记 —— 标记是继承的，逐级向上问。
+	// 注意和 ResolveInheritedRule 的语义一致：父目录被标记，子目录就算已归类。
+	auto IsCovered = [&RuleFolders](const FString& Folder) -> bool
+	{
+		FString Path = Folder;
+		while (!Path.IsEmpty())
+		{
+			if (RuleFolders.Contains(Path)) { return true; }
+			Path = FPaths::GetPath(Path);
+		}
+		return false;
+	};
+
+	IAssetRegistry* Registry = IAssetRegistry::Get();
+	if (Registry == nullptr)
+	{
+		return;
+	}
+
+	FARFilter Filter;
+	Filter.bRecursivePaths = true;
+	Filter.PackagePaths.Add(TEXT("/Game"));
+
+	TArray<FAssetData> Found;
+	Registry->GetAssets(Filter, Found);
+
+	// 未分类资产按「顶层未覆盖目录」归组。
+	// 能走到归组这步的目录，整条祖先链必然都没被标记（否则 IsCovered 就拦下了），
+	// 所以锚点一定是 /Game 的第一层子目录 —— 全拆散时清单收敛成第一层目录列表，
+	// 正好对应「逐个重新分配」的操作粒度；指派上层目录后子目录全部跟着消失。
+	TMap<FString, int32> Counts;
+	for (const FAssetData& Data : Found)
+	{
+		if (Data.PackageName.IsNone()) { continue; }
+		const FString Folder = FCrossingChunkRuleService::NormalizeFolderPath(
+			FPaths::GetPath(Data.PackageName.ToString()));
+		if (Folder.IsEmpty() || IsCovered(Folder)) { continue; }
+
+		FString Anchor = Folder;
+		while (!Anchor.Equals(TEXT("/Game"), ESearchCase::IgnoreCase))
+		{
+			const FString Parent = FPaths::GetPath(Anchor);
+			if (Parent.IsEmpty() || Parent.Equals(TEXT("/Game"), ESearchCase::IgnoreCase))
+			{
+				break;
+			}
+			Anchor = Parent;
+		}
+
+		int32& Count = Counts.FindOrAdd(Anchor);
+		++Count;
+	}
+
+	TArray<FString> Anchors;
+	Counts.GetKeys(Anchors);
+	Anchors.Sort();
+	for (const FString& Anchor : Anchors)
+	{
+		TSharedPtr<FUnclassFolder> Item = MakeShared<FUnclassFolder>();
+		Item->Folder = Anchor;
+		Item->Files  = Counts[Anchor];
+		Unclassified.Add(Item);
+	}
+}
+
+FReply SCrossingChunkPanel::OnRescanUnclassClicked()
+{
+	RefreshRules();
+	StatusMessage = TEXT("未分类资源已重新扫描");
+	return FReply::Handled();
+}
+
+/** 体积列的自适应单位：B/KB/MB/GB，后缀永远带全。 */
+static FString FormatChunkBytes(int64 Bytes)
+{
+	if (Bytes >= int64(1) << 30) { return FString::Printf(TEXT("%.2f GB"), Bytes / 1073741824.0); }
+	if (Bytes >= int64(1) << 20) { return FString::Printf(TEXT("%.1f MB"), Bytes / 1048576.0); }
+	if (Bytes >= int64(1) << 10) { return FString::Printf(TEXT("%.1f KB"), Bytes / 1024.0); }
+	return FString::Printf(TEXT("%d B"), static_cast<int32>(Bytes));
 }
 
 TSharedRef<SWidget> SCrossingChunkPanel::MakeChunkRow(TSharedPtr<FCrossingChunkRule> Rule)
@@ -920,6 +1133,48 @@ TSharedRef<SWidget> SCrossingChunkPanel::MakeChunkRow(TSharedPtr<FCrossingChunkR
 				.OnTextCommitted(FOnTextCommitted::CreateSP(this, &SCrossingChunkPanel::OnNameCommitted, ChunkId))
 			]
 		]
+		+ SHorizontalBox::Slot().AutoWidth().Padding(0.f, 0.f, 4.f, 0.f)
+		[
+			// 显示分类：下拉选现有分类，或选「新建分类…」弹输入框。纯显示字段，打包不读它。
+			SNew(SBox).WidthOverride(88.f)
+			[
+				SNew(SComboBox<TSharedPtr<FString>>)
+				.OptionsSource(&CategoryOptions)
+				.ContentPadding(FMargin(4.f, 2.f))
+				.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
+				.ToolTipText(LOCTEXT("CategoryPickTip", "显示用分类：面板列表和右键菜单按它分组，不影响打包。\n从列表选一个、选「未分组」清除，或选「新建分类…」直接建新的。"))
+				.OnGenerateWidget_Lambda([](TSharedPtr<FString> Option)
+				{
+					FString Label = TEXT("新建分类…");
+					if (Option.IsValid())
+					{
+						Label = Option->IsEmpty() ? TEXT("未分组") : *Option;
+					}
+					return SNew(STextBlock).Text(FText::FromString(Label));
+				})
+				.OnSelectionChanged_Lambda([this, ChunkId](TSharedPtr<FString> Option, ESelectInfo::Type SelectType)
+				{
+					if (SelectType == ESelectInfo::Direct)
+					{
+						return;
+					}
+					if (!Option.IsValid())
+					{
+						OpenNewCategoryPopup(ChunkId);   // nullptr 哨兵 = 「新建分类…」
+						return;
+					}
+					CommitCategory(ChunkId, *Option);
+				})
+				[
+					SNew(STextBlock)
+					.Text_Lambda([WeakRule = TWeakPtr<FCrossingChunkRule>(Rule)]()
+					{
+						const FCrossingChunkRule* P = WeakRule.Pin().Get();
+						return FText::FromString(P ? (P->Category.IsEmpty() ? TEXT("未分组") : P->Category) : FString());
+					})
+				]
+			]
+		]
 		+ SHorizontalBox::Slot().AutoWidth().Padding(0.f, 0.f, 12.f, 0.f)[SNew(SSpacer)]
 		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 		[
@@ -941,27 +1196,56 @@ TSharedRef<SWidget> SCrossingChunkPanel::MakeChunkRow(TSharedPtr<FCrossingChunkR
 		]
 		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 		[
-			SNew(SBox).WidthOverride(84.f)
+			SNew(SBox).WidthOverride(92.f)
 			[
 				SNew(STextBlock)
 				.Text(FText::FromString(ReportChunks.Contains(ChunkId)
-					? FString::Printf(TEXT("%.1f MB"), ReportChunks[ChunkId].Bytes / 1048576.0)
+					? FormatChunkBytes(ReportChunks[ChunkId].Bytes)
 					: TEXT("—")))
 			]
 		]
+		// 变化列：每个指标一小块、各自带颜色和中文动词，只显示非零项——
+		// 比 "+3 -1 ~2" 这种裸符号好读（那条写法是给懂符号的人看的）。
+		// 宽度用全表统一的 DeltaColumnWidth（跟随最宽内容），解散按钮才能对齐。
 		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 		[
-			SNew(SBox).WidthOverride(110.f)
+			SNew(SBox).WidthOverride(DeltaColumnWidth)
+			.ToolTipText(LOCTEXT("DeltaTip", "和上一次打包报告比：增 = 新增的文件，删 = 删除的文件，改 = 内容有修改的文件"))
 			[
-				SNew(STextBlock)
-				.Text(FText::FromString([&]() -> FString
+				!ReportChunks.Contains(ChunkId)
+				? TSharedRef<SWidget>(SNew(STextBlock).Text(FText::FromString(TEXT("—"))).ColorAndOpacity(FSlateColor::UseSubduedForeground()))
+				: ([&]() -> TSharedRef<SWidget>
 				{
-					if (!ReportChunks.Contains(ChunkId)) { return FString(); }
 					const FReportChunk& Info = ReportChunks[ChunkId];
-					if (Info.Added == 0 && Info.Removed == 0 && Info.Modified == 0) { return TEXT(""); }
-					return FString::Printf(TEXT("+%d  -%d  ~%d"), Info.Added, Info.Removed, Info.Modified);
-				}()))
-				.ColorAndOpacity(FSlateColor(FLinearColor(0.4f, 0.8f, 0.4f)))
+					if (Info.Added == 0 && Info.Removed == 0 && Info.Modified == 0)
+					{
+						return SNew(STextBlock)
+							.Text(FText::FromString(TEXT("无变化")))
+							.ColorAndOpacity(FSlateColor::UseSubduedForeground());
+					}
+					return SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().AutoWidth().Padding(0.f, 0.f, 10.f, 0.f)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(FString::Printf(TEXT("增 %d"), Info.Added)))
+							.ColorAndOpacity(FSlateColor(FLinearColor(0.45f, 0.8f, 0.45f)))
+							.Visibility(Info.Added > 0 ? EVisibility::Visible : EVisibility::Collapsed)
+						]
+						+ SHorizontalBox::Slot().AutoWidth().Padding(0.f, 0.f, 10.f, 0.f)
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(FString::Printf(TEXT("删 %d"), Info.Removed)))
+							.ColorAndOpacity(FSlateColor(FLinearColor(0.9f, 0.5f, 0.4f)))
+							.Visibility(Info.Removed > 0 ? EVisibility::Visible : EVisibility::Collapsed)
+						]
+						+ SHorizontalBox::Slot().AutoWidth()
+						[
+							SNew(STextBlock)
+							.Text(FText::FromString(FString::Printf(TEXT("改 %d"), Info.Modified)))
+							.ColorAndOpacity(FSlateColor(FLinearColor(0.55f, 0.7f, 0.95f)))
+							.Visibility(Info.Modified > 0 ? EVisibility::Visible : EVisibility::Collapsed)
+						];
+				})()
 			]
 		]
 		// 解散这个分块：删掉规则、目录回到未归类；顶部「撤销解散」可以恢复
@@ -979,23 +1263,10 @@ TSharedRef<SWidget> SCrossingChunkPanel::MakeUnclassRow(TSharedPtr<FUnclassFolde
 {
 	const FString Folder = Item->Folder;
 
-	// 这份清单来自"上一次打包报告"，而规则可能刚被改过 ——
-	// 所以拿当前规则再核一次：已经被某个分块覆盖的，标成「已归类（下次打包生效）」。
-	// （不直接删掉这一行：用户刚点完指派，得看得见"它去哪了"）
-	TArray<FCrossingChunkRule> Plain;
-	for (const TSharedPtr<FCrossingChunkRule>& R : Rows)
-	{
-		if (R.IsValid()) { Plain.Add(*R); }
-	}
-	FString Owner;
-	const FCrossingChunkRule* Covered = FCrossingChunkRuleService::ResolveInheritedRule(Plain, Folder, Owner);
-
-	const FText StateText = Covered
-		? FText::FromString(FString::Printf(TEXT("[已归类] → Chunk %d · %s（下次打包生效）"), Covered->ChunkId, *Covered->ChunkName))
-		: FText::FromString(Item->bIsNew ? TEXT("[新增]") : TEXT("[老欠账]"));
-	const FLinearColor StateColor = Covered
-		? FLinearColor(0.45f, 0.75f, 0.45f)
-		: (Item->bIsNew ? FLinearColor(1.f, 0.8f, 0.35f) : FLinearColor::Gray);
+	// 这份清单是实时扫出来的（对比当前规则和 AssetRegistry），不是上次打包报告 ——
+	// 不存在「规则刚改过、清单还是旧的」的对账问题：指派完一刷新，行就直接消失。
+	const FText StateText = LOCTEXT("UnclassTag", "[未分类]");
+	const FLinearColor StateColor(1.f, 0.8f, 0.35f);
 
 	return SNew(SHorizontalBox)
 		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
@@ -1031,9 +1302,19 @@ TSharedRef<SWidget> SCrossingChunkPanel::MakeUnclassRow(TSharedPtr<FUnclassFolde
 			.ToolTipText(LOCTEXT("AssignTip", "把这个目录划给某个分块（相当于在内容浏览器里右键它）"))
 			.OnGenerateWidget_Lambda([](TSharedPtr<FCrossingChunkRule> Option)
 			{
-				return SNew(STextBlock).Text(FText::FromString(Option.IsValid()
-					? FString::Printf(TEXT("Chunk %d · %s"), Option->ChunkId, *Option->ChunkName)
-					: FString()));
+				FString Label;
+				if (Option.IsValid())
+				{
+					if (Option->Category.IsEmpty())
+					{
+						Label = FString::Printf(TEXT("Chunk %d · %s"), Option->ChunkId, *Option->ChunkName);
+					}
+					else
+					{
+						Label = FString::Printf(TEXT("[%s] Chunk %d · %s"), *Option->Category, Option->ChunkId, *Option->ChunkName);
+					}
+				}
+				return SNew(STextBlock).Text(FText::FromString(Label));
 			})
 			.OnSelectionChanged_Lambda([this, Folder](TSharedPtr<FCrossingChunkRule> Option, ESelectInfo::Type SelectType)
 			{
@@ -1881,6 +2162,66 @@ void SCrossingChunkPanel::OnNameCommitted(const FText& NewText, ETextCommit::Typ
 		RefreshRules();
 	}
 	StatusMessage = Message;
+}
+
+void SCrossingChunkPanel::CommitCategory(int32 ChunkId, const FString& NewCategory)
+{
+	FString Message;
+	if (FCrossingChunkRuleService::SetChunkCategory(ChunkId, NewCategory, Message))
+	{
+		// 和「指派到」一样：回调正跑在下拉自己的回调里，重建整棵树推迟到下一帧
+		TWeakPtr<SWidget> WeakSelf = AsShared();
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakSelf](float)
+		{
+			TSharedPtr<SWidget> Pinned = WeakSelf.Pin();
+			if (Pinned.IsValid())
+			{
+				StaticCastSharedPtr<SCrossingChunkPanel>(Pinned)->RefreshRules();
+			}
+			return false;
+		}), 0.f);
+	}
+	StatusMessage = Message;
+}
+
+void SCrossingChunkPanel::OpenNewCategoryPopup(int32 ChunkId)
+{
+	TSharedRef<SWidget> Input =
+		SNew(SBorder)
+		.BorderImage(FCoreStyle::Get().GetBrush("Menu.Background"))
+		.Padding(8.f)
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 0.f, 0.f, 4.f)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("NewCategoryLabel", "新分类的名字（回车确认）："))
+			]
+			+ SVerticalBox::Slot().AutoHeight()
+			[
+				SNew(SEditableTextBox)
+				.MinDesiredWidth(180.f)
+				.OnTextCommitted(FOnTextCommitted::CreateSP(this, &SCrossingChunkPanel::OnNewCategoryCommitted, ChunkId))
+			]
+		];
+
+	FSlateApplication::Get().PushMenu(
+		AsShared(),
+		FWidgetPath(),
+		Input,
+		FSlateApplication::Get().GetCursorPos(),
+		FPopupTransitionEffect(FPopupTransitionEffect::TypeInPopup));
+}
+
+void SCrossingChunkPanel::OnNewCategoryCommitted(const FText& NewText, ETextCommit::Type CommitType, int32 ChunkId)
+{
+	if (CommitType != ETextCommit::OnEnter && CommitType != ETextCommit::OnUserMovedFocus)
+	{
+		return;
+	}
+
+	FSlateApplication::Get().DismissAllMenus();
+	CommitCategory(ChunkId, NewText.ToString());
 }
 
 FText SCrossingChunkPanel::GetSummaryText() const
