@@ -1068,6 +1068,31 @@ function Get-NewestProjectSource {
     return [pscustomobject]@{ Time = $newest; Path = $newestPath }
 }
 
+# 收据（*.target）里记着这次构建用的**插件描述符绝对路径**（"Path": "$(ProjectDir)/Plugins/X/X.uplugin"，
+# Type: UFS），UAT 的 staging 会照着它逐个 PluginDescriptor.FromFile 去读
+# （CopyBuildToStagingDirectory.Automation.cs:1936）。收据只有"真编一次"才会重写，所以插件目录改名/搬家
+# 之后它就是一张过期地图 ⇒ staging 直接 DirectoryNotFoundException：
+#   2026-10-11 就是这么炸的 —— Plugins\DreamGameplayTask-master 改名成 DreamGameplayTask，
+#   而 Android 收据还是 9/19 写的；Android 分支原来"有收据就不编"，于是打包死在 staging。
+# 时间戳比较抓不到这一类（改名不动 mtime），所以单独查一遍路径还在不在。
+function Test-ReceiptPluginPaths {
+    param([Parameter(Mandatory)][string]$ReceiptPath)
+
+    $missing = @()
+    if (-not (Test-Path -LiteralPath $ReceiptPath)) {
+        return [pscustomobject]@{ Valid = $true; Missing = $missing }
+    }
+
+    $text = Get-Content -LiteralPath $ReceiptPath -Raw -Encoding utf8
+    foreach ($m in [regex]::Matches($text, '"Path"\s*:\s*"\$\(ProjectDir\)/(Plugins/[^"]+\.uplugin)"')) {
+        $relative = $m.Groups[1].Value -replace '/', '\'
+        if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot $relative))) {
+            $missing += $relative
+        }
+    }
+    return [pscustomobject]@{ Valid = ($missing.Count -eq 0); Missing = $missing }
+}
+
 $AllOk = $true
 
 foreach ($Run in $RunList) {
@@ -1104,6 +1129,14 @@ foreach ($Run in $RunList) {
             if ($NewestSrc.Time -and ($NewestSrc.Time -gt $BinaryStamp)) {
                 $NeedCompile = $true
                 $WhyCompile  = ('源码比 Shipping 二进制新：{0}（源码 {1:yyyy-MM-dd HH:mm:ss} / 二进制 {2:yyyy-MM-dd HH:mm:ss}）' -f (Split-Path $NewestSrc.Path -Leaf), $NewestSrc.Time, $BinaryStamp)
+            }
+            else {
+                # 时间戳抓不到"插件目录改名/搬家"（改名不动 mtime），而收据里记的是绝对路径 —— 单独查一遍
+                $ReceiptCheck = Test-ReceiptPluginPaths -ReceiptPath $ReceiptPath
+                if (-not $ReceiptCheck.Valid) {
+                    $NeedCompile = $true
+                    $WhyCompile  = ('收据里记的插件路径已不存在：{0}（收据是上次构建时写的，插件目录改过名/搬过家 —— staging 会照着这张过期地图去读）' -f ($ReceiptCheck.Missing -join '、'))
+                }
             }
         }
         if ($ForceBuild) {
@@ -1155,23 +1188,66 @@ foreach ($Run in $RunList) {
         }
     }
     else {
-        # ---- 安卓：同理，Shipping 目标缺失时单独编它 ----
+        # ---- 安卓：同理，目标缺失**或过期**时单独编它 ----
         # 为什么必须单独编：打包一律带 -nocompile，UAT 不会替我们编译；
         # 而第一次打安卓时 Binaries\Android 下根本没有产物，不先编出来必然失败。
+        #
+        # 2026-10-11 补上"过期"这一半：原来这里只看收据**在不在**，于是插件改名 / 源码更新之后照样
+        # 跳过编译 ⇒ staging 拿着 9/19 那张收据去读已经改名的插件目录，直接 DirectoryNotFoundException。
+        # Win64 分支 2026-09-19 已经吃过"收据在 = 二进制新"的亏（见 Get-NewestProjectSource 的注释），
+        # 安卓这边现在按同一套判断：源码比二进制新，或收据里记的插件路径已不存在。
         $ReceiptName = if ($PackTarget -eq 'Server') { 'CrossingVoidServer' } else { 'CrossingVoid' }
         $AndroidBin = Join-Path $ProjectRoot 'Binaries\Android'
-        $HasAndroidShipping = $false
+        $AndroidReceipt = $null
         if (Test-Path -LiteralPath $AndroidBin) {
-            $HasAndroidShipping = [bool](Get-ChildItem -LiteralPath $AndroidBin -Filter "$ReceiptName-Android*Shipping*.target" -ErrorAction SilentlyContinue |
-                Select-Object -First 1)
+            $AndroidReceipt = Get-ChildItem -LiteralPath $AndroidBin -Filter "$ReceiptName-Android*Shipping*.target" -ErrorAction SilentlyContinue |
+                Select-Object -First 1
         }
         # 有的版本收据名不带平台后缀，兜一层
-        if (-not $HasAndroidShipping -and (Test-Path -LiteralPath $AndroidBin)) {
-            $HasAndroidShipping = [bool](Get-ChildItem -LiteralPath $AndroidBin -Filter '*Shipping*.target' -ErrorAction SilentlyContinue | Select-Object -First 1)
+        if (-not $AndroidReceipt -and (Test-Path -LiteralPath $AndroidBin)) {
+            $AndroidReceipt = Get-ChildItem -LiteralPath $AndroidBin -Filter '*Shipping*.target' -ErrorAction SilentlyContinue |
+                Select-Object -First 1
         }
-        if (-not $HasAndroidShipping) {
+
+        $NeedAndroidBuild = $false
+        $WhyAndroidBuild  = ''
+        if (-not $AndroidReceipt) {
+            $NeedAndroidBuild = $true
+            $WhyAndroidBuild  = "$ReceiptName 的 Android Shipping 目标还没编过（第一次会比较久：arm64 + 引擎模块）"
+        }
+        else {
+            $AndroidSo = Get-ChildItem -LiteralPath $AndroidBin -Filter "$ReceiptName-Android*Shipping*.so" -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+            if (-not $AndroidSo) {
+                $NeedAndroidBuild = $true
+                $WhyAndroidBuild  = 'Android Shipping 二进制（*.so）不存在，只剩收据'
+            }
+            else {
+                $NewestSrc = Get-NewestProjectSource
+                if ($NewestSrc.Time -and ($NewestSrc.Time -gt $AndroidSo.LastWriteTime)) {
+                    $NeedAndroidBuild = $true
+                    $WhyAndroidBuild  = ('源码比 Android 二进制新：{0}（源码 {1:yyyy-MM-dd HH:mm:ss} / 二进制 {2:yyyy-MM-dd HH:mm:ss}）' -f (Split-Path $NewestSrc.Path -Leaf), $NewestSrc.Time, $AndroidSo.LastWriteTime)
+                }
+                else {
+                    # 时间戳抓不到"插件目录改名/搬家"（改名不动 mtime），而收据里记的是绝对路径 —— 单独查一遍
+                    $ReceiptCheck = Test-ReceiptPluginPaths -ReceiptPath $AndroidReceipt.FullName
+                    if (-not $ReceiptCheck.Valid) {
+                        $NeedAndroidBuild = $true
+                        $WhyAndroidBuild  = ('收据里记的插件路径已不存在：{0}（收据是上次构建时写的，插件目录改过名/搬过家 —— staging 会照着这张过期地图去读）' -f ($ReceiptCheck.Missing -join '、'))
+                    }
+                }
+            }
+        }
+
+        # -ForceBuild 时编译交给 UAT 那一轮（Build-UatArgs 会保留 -build），这里就不再单独编一遍
+        if ($ForceBuild) { $NeedAndroidBuild = $false }
+
+        if ($NeedAndroidBuild -and $DryRun) {
+            Write-Host "[编译] (DryRun) 本应编译：$WhyAndroidBuild" -ForegroundColor Yellow
+        }
+        elseif ($NeedAndroidBuild) {
             Write-Host ''
-            Write-Host "[编译] $ReceiptName 的 Android Shipping 目标还没编过 —— 先单独编译它（第一次会比较久：arm64 + 引擎模块）" -ForegroundColor Yellow
+            Write-Host "[编译] $WhyAndroidBuild —— 先单独编译它（不会被 Live Coding 挡住，编辑器不用关）" -ForegroundColor Yellow
             $BuildBat = Join-Path $EngineRoot 'Engine\Build\BatchFiles\Build.bat'
             & $BuildBat $ReceiptName Android Shipping "-Project=$ProjectFile" -WaitMutex
             if ($LASTEXITCODE -ne 0) {
@@ -1183,6 +1259,9 @@ foreach ($Run in $RunList) {
             else {
                 Write-Host "[编译] 完成" -ForegroundColor Green
             }
+        }
+        else {
+            Write-Host ("[编译] {0} Android Shipping 目标是最新的，跳过编译" -f $ReceiptName) -ForegroundColor DarkGray
         }
     }
 
@@ -1438,10 +1517,39 @@ foreach ($Run in $RunList) {
                 Write-Host ''
                 Write-Host "  [清单] $ManifestOut" -ForegroundColor DarkGray
             }
+        }
+        else {
+            Write-Host ''
+            if ($Platform -eq 'Android') {
+                # 安卓把 pak 数据打进 APK/OBB（main.<版本>.<包名>.obb），产物目录里根本没有
+                # Content\Paks —— 这不是失败，只是「容器体积统计」这一项对安卓不适用。
+                # 清单归档和分包报告不受影响（见下面那一段）。
+                Write-Host '  （安卓：pak 打进 APK/OBB，没有 Content\Paks —— 容器体积统计跳过）' -ForegroundColor DarkGray
+                $AndroidRoot = Join-Path $OutDir $PlatformDir
+                $AndroidFiles = @(Get-ChildItem -LiteralPath $AndroidRoot -File -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Extension -in '.apk', '.obb' })
+                if ($AndroidFiles.Count -gt 0) {
+                    Write-Host "[产物] $AndroidRoot" -ForegroundColor Yellow
+                    foreach ($f in $AndroidFiles) {
+                        Write-Host ('  {0,-54} {1,10:N1} MB' -f $f.Name, ($f.Length / 1MB))
+                    }
+                }
+            }
+            else {
+                Write-Host "[警告] 没找到产物目录：$PaksDir" -ForegroundColor Yellow
+                Write-Host '       检查 -archivedirectory 与平台目录名。' -ForegroundColor Yellow
+            }
+        }
 
-            # ---- 归档 staging 清单，然后生成分包报告 ----
-            # 注意：UAT 的 PrePak_<CookPlatform>_UFSFiles.txt 是**临时文件**，
-            # 下一次打包会清掉，所以必须在这里立刻归档 + 立刻算报告。
+        # ---- 归档 staging 清单 + 生成分包报告（客户端两个平台都做）----
+        # 这一段原来挂在「产物目录里有没有 Content\Paks」那个判定里，于是安卓永远走不到：
+        # 安卓没有 Content\Paks，整块（归档 + 报告）被一起跳过 —— 表现就是
+        # 「安卓从来没有分包报告」，页面在安卓平台永远显示「报告：还没有」。
+        # 现在把两件事解耦：「有没有容器可以量体积」只影响体积统计（上面那一段），
+        # 「有没有清单可以归档、可以算报告」两个平台都一样做。
+        # 注意：UAT 的 PrePak_<CookPlatform>_UFSFiles.txt 是**临时文件**，
+        # 下一次打包会清掉，所以必须在这里立刻归档 + 立刻算报告。
+        if ($PackTarget -ne 'Server') {
             $StagedList = Join-Path $EngineRoot "Engine\Programs\AutomationTool\Saved\Logs\PrePak_${PlatformDir}_UFSFiles.txt"
             $ArchiveSub = Join-Path $LogDir 'ManifestHistory'
             if (-not (Test-Path -LiteralPath $ArchiveSub)) {
@@ -1462,24 +1570,17 @@ foreach ($Run in $RunList) {
             }
 
             # ---- 分包报告（页面/AX 都读它）----
-            if ($PackTarget -ne 'Server') {
-                $ReportScript = Join-Path $PSScriptRoot 'Build-ChunkReport.ps1'
-                if (Test-Path -LiteralPath $ReportScript) {
-                    try {
-                        & $ReportScript -ProjectRoot $ProjectRoot -ArchiveDir $OutDir `
-                            -Platform $Platform -Target $PackTarget -Mode $Mode -PackLogPath $LogFile
-                    }
-                    catch {
-                        Write-Host "  [警告] 分包报告生成失败：$($_.Exception.Message)" -ForegroundColor Yellow
-                        Write-Host '         （打包本身是成功的，报告只影响页面上的统计）' -ForegroundColor Yellow
-                    }
+            $ReportScript = Join-Path $PSScriptRoot 'Build-ChunkReport.ps1'
+            if (Test-Path -LiteralPath $ReportScript) {
+                try {
+                    & $ReportScript -ProjectRoot $ProjectRoot -ArchiveDir $OutDir `
+                        -Platform $Platform -Target $PackTarget -Mode $Mode -PackLogPath $LogFile
+                }
+                catch {
+                    Write-Host "  [警告] 分包报告生成失败：$($_.Exception.Message)" -ForegroundColor Yellow
+                    Write-Host '         （打包本身是成功的，报告只影响页面上的统计）' -ForegroundColor Yellow
                 }
             }
-        }
-        else {
-            Write-Host ''
-            Write-Host "[警告] 没找到产物目录：$PaksDir" -ForegroundColor Yellow
-            Write-Host '       检查 -archivedirectory 与平台目录名。' -ForegroundColor Yellow
         }
     }
 }

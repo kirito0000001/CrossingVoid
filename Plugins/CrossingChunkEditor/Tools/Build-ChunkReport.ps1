@@ -93,7 +93,14 @@ if (-not $StagedList) {
 }
 Write-Host "  文件清单 : $StagedList" -ForegroundColor DarkGray
 if (-not (Test-Path -LiteralPath $PaksDir)) {
-    Write-Host '  （没有 pak 容器：本模式不打 pak，所以体积那几列会是 0）' -ForegroundColor DarkGray
+    if ($Platform -eq 'Android') {
+        # 安卓把 pak 数据打进 APK/OBB，产物目录里没有 Content\Paks —— 这不是"没打 pak"，
+        # 而是"容器体积这一项对安卓量不到"。清单和报告照出，体积列页面会显示「不统计」。
+        Write-Host '  （安卓：pak 打进 APK/OBB，没有容器文件 —— 体积列会是不统计；文件数/变化照常）' -ForegroundColor DarkGray
+    }
+    else {
+        Write-Host '  （没有 pak 容器：本模式不打 pak，所以体积那几列会是 0）' -ForegroundColor DarkGray
+    }
 }
 if (-not (Test-Path -LiteralPath $ReportDir)) { New-Item -ItemType Directory -Path $ReportDir -Force | Out-Null }
 
@@ -196,8 +203,11 @@ if (Test-Path -LiteralPath $AllChunksCsv) {
         $size = 0
         if (-not [int]::TryParse($parts[4].Trim(), [ref]$size)) { continue }
         # /Game/A/B/C  →  A/B/C.uasset（和 staged 清单里的相对路径对上）
+        # 同一个 package 在 staged 清单里也可能是 .umap（关卡、WP 的 _Generated_ 单元），
+        # 所以两个后缀都登记一份 —— 不然地图永远没有大小可比，"改"就测不到。
         $rel = $pkg -replace '^/Game/', ''
         $PackageSize["$rel.uasset"] = $size
+        $PackageSize["$rel.umap"]   = $size
     }
 }
 for ($i = 0; $i -lt $FileRows.Count; $i++) {
@@ -206,6 +216,63 @@ for ($i = 0; $i -lt $FileRows.Count; $i++) {
         $FileRows[$i] = @($key, [int]$PackageSize[$key], $FileRows[$i][2])
     }
 }
+
+# ============================ 3.4 上一次报告（哈希和"过渡期"判断都要用） ============================
+$Previous = $null
+$PreviousFiles = @{}
+if (Test-Path -LiteralPath $LatestPath) {
+    $Previous = Get-Content -LiteralPath $LatestPath -Encoding UTF8 -Raw | ConvertFrom-Json
+    foreach ($row in $Previous.files) { $PreviousFiles[$row[0]] = $row }
+}
+
+# 「过渡期」= 上一次报告的行还没有第 4 列哈希（本次改版之前的报告）。
+# 那一趟没有哈希可比，只能拿"源文件时间比上次报告晚"当兜底 —— 否则你打完这一包
+# 仍然看不到自己刚改的东西，要再打一包才认（改版第一次跑就是这种情况）。
+$TransitionMode = $false
+$PrevReportTime = [datetime]::MinValue
+if ($Previous -and $Previous.files.Count -gt 0 -and (@($Previous.files[0]).Count -lt 4)) {
+    $TransitionMode = $true
+    try { $PrevReportTime = [datetime]::Parse($Previous.generatedAt) } catch { $PrevReportTime = [datetime]::MinValue }
+}
+$TransitionChanged = @{}
+
+# ============================ 3.5 源资产哈希（"改"的判据之一） ============================
+# 光比 cook 出来的字节数抓不到"同字节数的修改"：材质实例改个标量、Blueprint 改个默认值，
+# 编出来大小一模一样；地图（.umap）、大块数据（.ubulk）连大小都没有。所以再算一遍
+# **源资产**的哈希 —— 只要 Content 下那个文件字节变了，就算"改"。
+#   · 用源文件而不是 cook 产物：开了 ZenStore 之后 cooked 的 uasset 根本不在磁盘上
+#     （Saved\Cooked 里只剩 ShaderArchive / 字体这些散件），源文件才是稳定可比的那一份。
+#   · 源文件不存在（cook 期才生成的 _Generated_ 之类）就记空串，那个文件退回只比大小。
+#   · 截断成 16 位十六进制（64 bit）：够用，json 里每个文件也只多 ~19 字节。
+$HashStart = Get-Date
+$HashedCount = 0
+$SourceMissing = 0
+for ($i = 0; $i -lt $FileRows.Count; $i++) {
+    $Rel = $FileRows[$i][0]
+    $SrcPath = Join-Path $ProjectRoot ("Content\" + ($Rel -replace '/', '\'))
+    $Hash = ''
+    if (Test-Path -LiteralPath $SrcPath -PathType Leaf) {
+        # 过渡期才去 stat 源文件时间（正常那趟不需要，省 1 万次系统调用）
+        if ($TransitionMode -and ([System.IO.File]::GetLastWriteTime($SrcPath) -gt $PrevReportTime)) {
+            $TransitionChanged[$Rel] = $true
+        }
+        try {
+            $Hash = (Get-FileHash -LiteralPath $SrcPath -Algorithm MD5).Hash.Substring(0, 16)
+            $HashedCount++
+        }
+        catch {
+            # 个别文件读不了（被编辑器锁住、权限）不能让报告整个挂掉 ——
+            # 那个文件记空哈希，退回只比大小。
+            $Hash = ''
+            $SourceMissing++
+        }
+    }
+    else {
+        $SourceMissing++
+    }
+    $FileRows[$i] = @($Rel, $FileRows[$i][1], $FileRows[$i][2], $Hash)
+}
+$HashSeconds = [math]::Round(((Get-Date) - $HashStart).TotalSeconds, 1)
 
 # ============================ 4. 容器体积 ============================
 $ContainerBytes = @{}
@@ -217,22 +284,31 @@ if (Test-Path -LiteralPath $PaksDir) {
     }
 }
 
+# 有没有「容器体积」这回事：Windows 的 pak 落在 Content\Paks 里，能量；
+# 安卓的 pak 打进 APK/OBB，量不到（快速验证本来也不打 pak）。
+# 报告里记一个明确的开关，页面据此把体积列显示成「不统计」而不是误导性的 0 B。
+# 文件数 / 变化 / 未分类清单都不受影响 —— 那几样只依赖 staged 清单。
+$HasContainerStats = ($ContainerBytes.Count -gt 0)
+
 # ============================ 5. 和上一次报告对比 ============================
-$Previous = $null
-$PreviousFiles = @{}
-if (Test-Path -LiteralPath $LatestPath) {
-    $Previous = Get-Content -LiteralPath $LatestPath -Encoding UTF8 -Raw | ConvertFrom-Json
-    foreach ($row in $Previous.files) { $PreviousFiles[$row[0]] = $row }
-}
+# （$Previous / $PreviousFiles 在 3.4 就读好了 —— 3.5 的过渡期判断要用）
 $CurrentMap = @{}
 foreach ($row in $FileRows) { $CurrentMap[$row[0]] = $row }
 
 if ($Previous) {
     $AddedPaths    = @($FileRows    | Where-Object { -not $PreviousFiles.ContainsKey($_[0]) })
     $RemovedPaths  = @($PreviousFiles.Keys | Where-Object { -not $CurrentMap.ContainsKey($_) })
+    # 「改」= cook 体积变了 或 源资产内容变了（第 4 列哈希，见 3.5）。
+    # 老报告的行只有 3 列、没有哈希 → 那条就只比大小，行为退回从前（兼容）。
+    # 注意：PowerShell 的括号里不能靠"下一行以 -and 开头"续行（会被当成新语句报错，
+    # 实测：行尾停在运算符上才续行），所以这里一个判断一行，别把长条件拆行。
     $ModifiedPaths = @($FileRows | Where-Object {
             $prev = $PreviousFiles[$_[0]]
-            $prev -and $prev[1] -gt 0 -and $_[1] -gt 0 -and $prev[1] -ne $_[1]
+            if (-not $prev) { return $false }
+            if ($TransitionChanged.ContainsKey($_[0])) { return $true }
+            if ($prev[1] -gt 0 -and $_[1] -gt 0 -and $prev[1] -ne $_[1]) { return $true }
+            if ($prev.Count -ge 4 -and $prev[3] -and $_[3] -and $prev[3] -ne $_[3]) { return $true }
+            return $false
         })
 }
 else {
@@ -426,6 +502,7 @@ $Report = [ordered]@{
     issues         = $Issues
     download       = [ordered]@{ changedChunks = $ChangedChunks; bytes = $DownloadBytes }
     settings       = $SettingsSnapshot
+    containerStats = $HasContainerStats
     files          = $FileRows
 }
 
@@ -449,6 +526,11 @@ foreach ($c in $ChunksOut) {
     $chg = if ($d.added -or $d.removed -or $d.modified) { "+$($d.added) -$($d.removed) ~$($d.modified)" } else { '' }
     Write-Host ('  {0,-6} {1,-24} {2,10} {3,14} {4,10}' -f $c.id, $c.name, $c.matchedFiles, $mb, $chg)
 }
+Write-Host ("  源资产哈希：{0} 个文件 / {1} 秒（{2} 个源文件不存在或读不了，那些只比大小）" -f $HashedCount, $HashSeconds, $SourceMissing) -ForegroundColor DarkGray
+if ($TransitionMode) {
+    Write-Host ('  过渡期：上一次报告里没有哈希列 —— 这一趟用「源文件时间比上次报告晚」兜底，算作「改」的有 {0} 个' -f $TransitionChanged.Count) -ForegroundColor Yellow
+    Write-Host '          （插件 cook 期重写过、内容其实没变的资源也会被算进来；下一趟起只看内容哈希，就干净了）' -ForegroundColor DarkGray
+}
 Write-Host ''
 if ($UnclassOut.Count -gt 0) {
     Write-Host "  未分类 $($UnclassOut.Count) 个目录（→ pakchunk$NewChunkId）：" -ForegroundColor Yellow
@@ -457,7 +539,20 @@ if ($UnclassOut.Count -gt 0) {
         Write-Host ("    [{0}] {1}  ({2} 个文件)" -f $tag, $u.folder, $u.files) -ForegroundColor Yellow
     }
 }
-if ($ChangedChunks.Count -gt 0) {
+if (-not $HasContainerStats) {
+    # 没有容器可量的时候别报「需下载约 0 MB」—— 那会被读成"不用下载"。
+    # 变化清单本身是有的（它是文件级的差异），只是下载量算不出来。
+    if ($ChangedChunks.Count -gt 0) {
+        Write-Host ("  变化的容器：{0}（这次没有容器文件可量，下载量算不出来）" -f ($ChangedChunks -join ', ')) -ForegroundColor Green
+    }
+    elseif ($Previous) {
+        Write-Host '  和上一次报告相比没有变化' -ForegroundColor Green
+    }
+    else {
+        Write-Host '  首次报告 —— 没有对比基准，下次打包才会有"变化"数据' -ForegroundColor DarkGray
+    }
+}
+elseif ($ChangedChunks.Count -gt 0) {
     Write-Host ("  玩家本次需下载约 {0} MB（变化的容器：{1}）" -f [math]::Round($DownloadBytes / 1MB, 1), ($ChangedChunks -join ', ')) -ForegroundColor Green
 }
 elseif ($Previous) {

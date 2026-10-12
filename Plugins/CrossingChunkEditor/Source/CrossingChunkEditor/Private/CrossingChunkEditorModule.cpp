@@ -856,6 +856,65 @@ bool FCrossingChunkRuleService::Assign(const FString& Folder, int32 ChunkId, con
 	return true;
 }
 
+/**
+ * 一次性新建一条规则：把一整批目录划给一个新 Chunk。
+ * 《常规补丁》登记「版本补丁N」用 —— 一次读写、原子落盘，
+ * 不像逐目录 Assign 那样写 N 次文件（中途失败会留下半条规则）。
+ *
+ * MinChunkId：新号的下限，用来避开"上一次打包的兜底块号"。那个号没写进规则
+ * （脚本每次按 max+1 现算），但已经随包发给玩家了；复用它等于让同一个号在
+ * 新包里装另一批内容，启动器那边会认成同一块。
+ */
+bool FCrossingChunkRuleService::AddChunk(const FString& ChunkName, const TArray<FString>& Folders, int32& OutChunkId, FString& OutMessage, int32 MinChunkId)
+{
+	TArray<FCrossingChunkRule> Rules;
+	FString Error;
+	if (!LoadRules(Rules, Error))
+	{
+		OutMessage = FString::Printf(TEXT("规则读取失败：%s"), *Error);
+		return false;
+	}
+
+	// 目录归一化 + 去重 + 排序（落盘的行才稳定，diff 也好看）
+	TArray<FString> Paths;
+	for (const FString& Folder : Folders)
+	{
+		const FString Path = NormalizeFolderPath(Folder);
+		if (!Path.IsEmpty()) { Paths.AddUnique(Path); }
+	}
+	if (Paths.Num() == 0)
+	{
+		OutMessage = TEXT("没有要登记的目录。");
+		return false;
+	}
+	Paths.Sort();
+
+	FCrossingChunkRule NewRule;
+	NewRule.ChunkId = FMath::Max(NextChunkId(Rules), MinChunkId);
+	const FString TrimmedName = ChunkName.TrimStartAndEnd();
+	NewRule.ChunkName = TrimmedName.IsEmpty() ? FString::Printf(TEXT("Chunk %d"), NewRule.ChunkId) : TrimmedName;
+	NewRule.Folders = Paths;
+	// 和右键菜单新建时同一条规矩：只有 0 号包默认进安装包（新号必然 > 0，所以这里是 false）
+	NewRule.bIncludeInInstallPackage = (NewRule.ChunkId == 0);
+	Rules.Add(MoveTemp(NewRule));
+
+	// 和 Assign 一样按号排序后落盘：书写顺序 = 优先级，号大的（兜底性质的）排后面
+	Rules.Sort([](const FCrossingChunkRule& A, const FCrossingChunkRule& B) { return A.ChunkId < B.ChunkId; });
+
+	const int32 NewId = Rules.Last().ChunkId;
+	const FString NewName = Rules.Last().ChunkName;
+
+	if (!SaveRules(Rules, Error))
+	{
+		OutMessage = FString::Printf(TEXT("写入失败：%s"), *Error);
+		return false;
+	}
+
+	OutChunkId = NewId;
+	OutMessage = FString::Printf(TEXT("已把 %d 个未分类目录登记为新分块 %d「%s」"), Paths.Num(), NewId, *NewName);
+	return true;
+}
+
 bool FCrossingChunkRuleService::RenameChunk(int32 ChunkId, const FString& NewName, FString& OutMessage)
 {
 	TArray<FCrossingChunkRule> Rules;

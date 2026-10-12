@@ -78,6 +78,18 @@ public:
 	/** 把目录划给某个 Chunk；ChunkId 不存在就新建一条规则（名字用 ChunkName）。 */
 	static bool Assign(const FString& Folder, int32 ChunkId, const FString& ChunkName, FString& OutMessage);
 
+	/**
+	 * 一次性新建一条规则，把一整批目录划给一个新 Chunk，返回新号。
+	 * 新号 = max(NextChunkId, MinChunkId)：MinChunkId 用来避开"上一次打包的兜底块号"——
+	 * 那个号没写进规则（脚本每次现算），但**已经随包发给玩家了**，
+	 * 复用它会让同一个号在新包里装另一批内容（启动器那边会认成同一块）。
+	 * 落盘前的排序和 Assign 一致（按号排，号大的排后面 = 兜底性质的在后面）。
+	 *
+	 * 《常规补丁》点「开始打包」时用它登记「版本补丁N」：一次读写、原子落盘 ——
+	 * 逐目录调 Assign 会写 N 次文件，中途失败还会留下半条规则。
+	 */
+	static bool AddChunk(const FString& ChunkName, const TArray<FString>& Folders, int32& OutChunkId, FString& OutMessage, int32 MinChunkId = 0);
+
 	/** 去掉该目录的直接标记（从此继承父目录）；规则空了会一并删掉。 */
 	static bool RemoveAssignment(const FString& Folder, FString& OutMessage);
 
