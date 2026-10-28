@@ -1,4 +1,4 @@
-﻿#include "SCrossingChunkPanel.h"
+#include "SCrossingChunkPanel.h"
 
 #include "ContentBrowserModule.h"
 #include "IContentBrowserSingleton.h"
@@ -19,6 +19,7 @@
 #include "Serialization/JsonSerializer.h"
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
+#include "Misc/App.h"                                        // FApp::GetProjectName（target 名不再写死）
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/DateTime.h"                                   // FDateTime（算"变化基准"隔了多久）
 #include "Misc/MessageDialog.h"
@@ -93,21 +94,22 @@ private:
 	FTextBlockStyle MakeStyleForLine(const FString& Line) const
 	{
 		FTextBlockStyle Style = BaseStyle;
-		if (Line.Contains(TEXT("Error:")) || Line.Contains(TEXT("失败")) || Line.Contains(TEXT("错误"))
-			|| Line.Contains(TEXT("!!")) || Line.Contains(TEXT("Exception")))
+		if (Line.Contains(TEXT("Error:")) || Line.Contains(TEXT("error C")) || Line.Contains(TEXT("error LNK"))
+			|| Line.Contains(TEXT("Build failed")) || Line.Contains(TEXT("BUILD FAILED")) || Line.Contains(TEXT("ScriptHalted"))
+			|| Line.Contains(TEXT("失败")) || Line.Contains(TEXT("错误")) || Line.Contains(TEXT("!!")) || Line.Contains(TEXT("Exception")))
 		{
 			Style.SetColorAndOpacity(FSlateColor(FLinearColor(1.00f, 0.42f, 0.40f)));   // 红
 		}
-		else if (Line.Contains(TEXT("Warning:")) || Line.Contains(TEXT("警告")))
+		else if (Line.Contains(TEXT("Warning:")) || Line.Contains(TEXT("warning C")) || Line.Contains(TEXT("warning LNK")) || Line.Contains(TEXT("警告")))
 		{
 			Style.SetColorAndOpacity(FSlateColor(FLinearColor(1.00f, 0.84f, 0.35f)));   // 黄
 		}
-		else if (Line.Contains(TEXT("[OK]")) || Line.Contains(TEXT("成功")) || Line.Contains(TEXT("完成"))
-			|| Line.Contains(TEXT("已删除")))
+		else if (Line.Contains(TEXT("[OK]")) || Line.Contains(TEXT("BUILD SUCCESSFUL")) || Line.Contains(TEXT("Build succeeded"))
+			|| Line.Contains(TEXT("成功")) || Line.Contains(TEXT("完成")) || Line.Contains(TEXT("已删除")))
 		{
 			Style.SetColorAndOpacity(FSlateColor(FLinearColor(0.55f, 0.90f, 0.55f)));   // 绿
 		}
-		else if (Line.Contains(TEXT("平台设置")) || Line.Contains(TEXT("[缓存]")) || Line.Contains(TEXT("基线")))
+		else if (Line.Contains(TEXT("平台设置")) || Line.Contains(TEXT("[缓存]")) || Line.Contains(TEXT("基线")) || Line.Contains(TEXT("[代码补丁]")))
 		{
 			Style.SetColorAndOpacity(FSlateColor(FLinearColor(0.50f, 0.78f, 1.00f)));   // 青
 		}
@@ -153,7 +155,7 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 	SelectedMode = ModeOptions[0];
 
 	OutputDir = TEXT("F:\\DaBaoV\\Crossingvoid");              // 和脚本 -ArchiveDir 的默认值一致
-	ReleaseRoot = TEXT("F:\\DaBaoV\\Crossingvoid\\Release");   // 和脚本 -ReleaseRoot 的默认值一致
+	ReleaseRoot = DeriveReleaseRoot(GetEffectiveArchiveDir());                // 跟随输出目录 + 当前配置（Release / Release-Development）
 	MapsCsv.Empty();
 
 	// 恢复上次的选项（页面关掉再打开、甚至重启编辑器都记得）
@@ -178,6 +180,15 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 			[
 				SNew(SButton).Text(LOCTEXT("Refresh", "刷新")).IsEnabled_Lambda([this]() { return AreInputsEnabled(); }).OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnRefreshClicked))
 			]
+			// 撤销解散是「分块规则」的操作，跟刷新放一起；以前夹在打包按钮中间，容易点错
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(2.f, 0.f)
+			[
+				SNew(SButton)
+				.Text(LOCTEXT("UndoDisband", "撤销解散"))
+				.ToolTipText(LOCTEXT("UndoDisbandTip", "把刚才解散掉的那个分块（连同它的目录）恢复回来"))
+				.IsEnabled_Lambda([this]() { return AreInputsEnabled() && UndoRule.IsValid(); })
+				.OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnUndoDisbandClicked))
+			]
 			+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center)
 			[
 				SNew(STextBlock).Text(this, &SCrossingChunkPanel::GetSummaryText).AutoWrapText(true).ColorAndOpacity(FSlateColor::UseSubduedForeground())
@@ -200,6 +211,22 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 						SaveSetting(*GetMapsSettingKey(), MapsCsv);
 
 						SelectedTarget = Option;
+
+						// 配置跟着目标走：服务器默认 Development（开房间/回收全靠日志，
+						// Shipping 会把 UE_LOG 和控制台编掉），客户端默认 Shipping。
+						// 每个目标各自的选择存在 DevelopmentBuild_<Target> 里，没存过才用默认值。
+						// 注意要在 SelectedTarget 赋值之后读：键和默认值都跟着新目标算。
+						{
+							// 服务器固定 Development（不看存档、界面不给选）；客户端读存档；
+							// 安卓固定 Shipping。判断收在 ResolveDevelopmentForCurrentTarget 里，只此一处。
+							const bool bWantDev = ResolveDevelopmentForCurrentTarget();
+							if (bDevelopmentBuild != bWantDev)
+							{
+								bDevelopmentBuild = bWantDev;
+								// 换配置 = 换基线根目录（产物目录共用，不跟着变）
+								ReleaseRoot = DeriveReleaseRoot(GetEffectiveArchiveDir());
+							}
+						}
 
 						// 再把「新目标」上次勾的图读出来贴回勾选框
 						MapsCsv = LoadSetting(*GetMapsSettingKey());
@@ -280,30 +307,8 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 				})
 				.OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnPackClicked))
 			]
-			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(2.f, 0.f)
-			[
-				SNew(SButton).Text(LOCTEXT("CopyCmd", "复制命令")).IsEnabled_Lambda([this]() { return AreInputsEnabled(); }).OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnCopyCommandClicked))
-			]
-			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(2.f, 0.f)
-			[
-				SNew(SButton)
-				.Text(LOCTEXT("UndoDisband", "撤销解散"))
-				.ToolTipText(LOCTEXT("UndoDisbandTip", "把刚才解散掉的那个分块（连同它的目录）恢复回来"))
-				.IsEnabled_Lambda([this]() { return AreInputsEnabled() && UndoRule.IsValid(); })
-				.OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnUndoDisbandClicked))
-			]
-			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(2.f, 0.f)
-			[
-				SNew(SButton).Text(LOCTEXT("OpenLog", "日志目录")).IsEnabled_Lambda([this]() { return AreInputsEnabled(); }).OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnOpenLogDirClicked))
-			]
-			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(2.f, 0.f)
-			[
-				SNew(SButton)
-				.Text(LOCTEXT("ClearCache", "清除缓存"))
-				.ToolTipText(LOCTEXT("ClearCacheTip", "删掉能再生的缓存（StagedBuilds / Cooked / Shaders）腾磁盘空间；不会动 Intermediate\\Build、Content、归档目录"))
-				.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
-				.OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnClearCacheClicked))
-			]
+			// 「代码补丁」按钮已于 2026-10-27 删除：只改代码 / 只改内容 / 两者都改，统一走上面的「开始打包」；
+			// Patch 模式下脚本会先扫一遍变化 —— 只改代码就编译+镜像二进制、跳过 cook，改内容才 cook+pak。
 		]
 
 		// ---- 第二行：打包位置 / 选定地图 ----
@@ -327,7 +332,9 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 					{
 						OutputDir = NewText.ToString().TrimStartAndEnd();
 						if (OutputDir.IsEmpty()) { OutputDir = TEXT("F:\\DaBaoV\\Crossingvoid"); }
+						ReleaseRoot = DeriveReleaseRoot(GetEffectiveArchiveDir());
 						SaveSettings();
+						RefreshStatus();   // 基线目录跟着变，状态行也要立刻刷新
 					})
 				]
 			]
@@ -350,6 +357,8 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 		+ SVerticalBox::Slot().AutoHeight().Padding(10.f, 4.f, 8.f, 0.f)
 		[
 			SNew(SHorizontalBox)
+			// 服务器不分包、没有「玩家版本 / 基线」这一说 —— 整行藏掉（状态行会写清"不适用"）
+			.Visibility_Lambda([this]() { return IsServerTarget() ? EVisibility::Collapsed : EVisibility::Visible; })
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 			[
 				SNew(STextBlock).Text(LOCTEXT("PlayerVerLabel", "玩家版本")).ColorAndOpacity(FSlateColor::UseSubduedForeground())
@@ -373,11 +382,17 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 			]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(14.f, 0.f, 0.f, 0.f)
 			[
-				SNew(STextBlock).Text(LOCTEXT("RelVerLabel", "基线版本")).ColorAndOpacity(FSlateColor::UseSubduedForeground())
+				SNew(STextBlock)
+				.Text(LOCTEXT("RelVerLabel", "基线版本"))
+				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+				// 《快速验证》不建基线，这一格对它没意义
+				.Visibility_Lambda([this]() { return NeedsBaseline() ? EVisibility::Visible : EVisibility::Collapsed; })
 			]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(4.f, 0.f)
 			[
-				SNew(SBox).WidthOverride(110.f)
+				SNew(SBox)
+				.WidthOverride(110.f)
+				.Visibility_Lambda([this]() { return NeedsBaseline() ? EVisibility::Visible : EVisibility::Collapsed; })
 				[
 					SNew(SEditableTextBox)
 					.IsReadOnly(true)
@@ -395,6 +410,7 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 					return FText::FromString(Root.IsEmpty() ? TEXT("基线目录：—") : FString::Printf(TEXT("基线目录：%s"), *Root));
 				})
 				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+				.Visibility_Lambda([this]() { return NeedsBaseline() ? EVisibility::Visible : EVisibility::Collapsed; })
 			]
 		]
 
@@ -465,10 +481,61 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 					]
 				]
-				// ---- 基线位置：建基线和算补丁都走它，改完下次打包生效（存进 EditorPerProjectUserSettings.ini 的 [CrossingChunkPackage]）----
+				// ---- 打包配置：正式包（Shipping）/ 开发模式（Development）----
+				// 只有 Development 能看见屏幕打印：引擎 UEngine::AddOnScreenDebugMessage 的
+				// 整个函数体在 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST) 里（UnrealEngine.cpp:12468），
+				// 蓝图 PrintString 走的也是它（KismetSystemLibrary.cpp:534）——
+				// 所以"打到屏幕上"这件事在 Shipping 里根本不存在，不是开关问题。
+				// 这一行只对 Windows 客户端显示：服务器固定 Development（没有可选项，见 ResolveDevelopmentForCurrentTarget），
+				// 安卓脚本直接拦。注意不能用 IsWin64Target() 判断 —— 服务器也是 Win64。
 				+ SVerticalBox::Slot().AutoHeight().Padding(6.f, 0.f, 6.f, 6.f)
 				[
 					SNew(SHorizontalBox)
+					.Visibility_Lambda([this]()
+					{
+						return (IsWin64Target() && !IsServerTarget()) ? EVisibility::Visible : EVisibility::Collapsed;
+					})
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+					[
+						SNew(SCheckBox)
+						.IsEnabled_Lambda([this]() { return AreInputsEnabled() && IsDevelopmentAvailable(); })
+						.IsChecked_Lambda([this]() { return bDevelopmentBuild ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+						.OnCheckStateChanged_Lambda([this](ECheckBoxState NewState)
+						{
+							SetDevelopmentBuild(NewState == ECheckBoxState::Checked);
+						})
+						.ToolTipText(LOCTEXT("DevBuildTip",
+							"开发模式（-Configuration Development）：PrintString / 屏幕打印 / 日志 / 控制台都可见。\n"
+							"正式包（Shipping）里这些都是【整段被编译掉】，不是开关没开，重打也看不到。\n\n"
+							"这个开关只对 Windows 客户端有意义：服务器固定走 Development（房间里那套日志/控制台\n"
+							"是排障的唯一依据），所以服务器下这一行根本不显示；安卓也没有 Development 配置。\n"
+							"客户端默认关闭，改了会记住。\n\n"
+							"产物【仍落在同一个目录】（上传脚本认死的路径不变，不用改）；\n"
+							"但基线分开：<输出目录>\\Release（正式）/ <输出目录>\\Release-Development（开发），报告也各一份。\n"
+							"整条线都留在 Development 里时，《常规补丁》照常能打；反过来，正式基线不会被开发包覆盖。\n"
+							"另一种配置的 exe/dll 会在打包时被删掉（两种配置共用目录，不删会混包）。\n"
+							"代价：客户端走《版本更新》/《常规补丁》时 Development 会强制全量 cook（-clean，避免和 Shipping 的 cooked 数据混）。\n"
+							"服务器不受这条影响 —— 它本来每轮就全量 cook（脚本先删 Saved\\Cooked\\WindowsServer），换配置不多花时间。\n"
+							"安卓没有 Development 配置（脚本会直接拦），测试包用 Shipping。"))
+						[
+							SNew(STextBlock)
+							.Text(LOCTEXT("DevBuildLabel", "开发模式打包（Development）"))
+							.Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
+						]
+					]
+					+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center).Padding(10.f, 0.f, 0.f, 0.f)
+					[
+						SNew(STextBlock)
+						.Text_Lambda([this]() { return GetDevelopmentHint(); })
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
+						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+					]
+				]
+				// ---- 基线位置：跟随输出目录 + 当前配置，只读。不建基线的模式/目标下整行藏掉 ----
+				+ SVerticalBox::Slot().AutoHeight().Padding(6.f, 0.f, 6.f, 6.f)
+				[
+					SNew(SHorizontalBox)
+					.Visibility_Lambda([this]() { return NeedsBaseline() ? EVisibility::Visible : EVisibility::Collapsed; })
 					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 					[
 						SNew(STextBlock)
@@ -482,25 +549,90 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 							SNew(SEditableTextBox)
 							.Text_Lambda([this]() { return FText::FromString(ReleaseRoot); })
 							.Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
+							.IsReadOnly(true)
+							.ReadOnlyForegroundColor(FSlateColor::UseSubduedForeground())
 							.ToolTipText(LOCTEXT("ReleaseRootTip",
-								"基线（Releases）存放的根目录，传给脚本的 -ReleaseRoot。\n"
-								"《版本更新》往这里建基线（一条约 1.5 GB），《常规补丁》也从这里读基线算差异。\n"
-								"留空恢复默认 F:\\DaBaoV\\Crossingvoid\\Release"))
+								"基线根目录跟随输出目录和当前配置（只读）：\n"
+								"  正式包（Shipping）    → <输出目录>\\Release\n"
+								"  开发模式（Development）→ <输出目录>\\Release-Development\n"
+								"《版本更新》往这里建基线，《常规补丁》也从这里读基线算差异。\n"
+								"两者刻意分开：两种配置共用产物目录，但基线混在一起会让开发包的《版本更新》覆盖正式基线。"))
 							.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
-							.SelectAllTextWhenFocused(true)
-							.OnTextCommitted_Lambda([this](const FText& NewText, ETextCommit::Type)
-							{
-								ReleaseRoot = NewText.ToString().TrimStartAndEnd();
-								if (ReleaseRoot.IsEmpty()) { ReleaseRoot = TEXT("F:\\DaBaoV\\Crossingvoid\\Release"); }
-								SaveSettings();
-								RefreshStatus();
-							})
 						]
 					]
 					+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center)
 					[
 						SNew(STextBlock)
-						.Text(LOCTEXT("ReleaseRootHint", "改完下次打包生效；和「输出目录」放在同一个盘最省事"))
+						.Text_Lambda([this]()
+						{
+							return FText::FromString(FString::Printf(
+								TEXT("自动跟随输出目录：<输出目录>\\%s（只读）"),
+								bDevelopmentBuild ? TEXT("Release-Development") : TEXT("Release")));
+						})
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
+						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+					]
+				]
+				// ---- 工具按钮：和打包参数无关，收进「运行设置」——
+				// 以前和「开始打包 / 代码补丁」挤在同一行，容易误点，也把打包流程淹没了。
+				+ SVerticalBox::Slot().AutoHeight().Padding(6.f, 0.f, 6.f, 6.f)
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("ToolsLabel", "工具"))
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
+						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+					]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6.f, 0.f)
+					[
+						SNew(SButton)
+						.Text(LOCTEXT("CopyCmd", "复制命令"))
+						.ToolTipText(LOCTEXT("CopyCmdTip", "把这次会跑的命令整条复制出来 —— 贴到 PowerShell 里手跑，或核对参数"))
+						.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
+						.OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnCopyCommandClicked))
+					]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(4.f, 0.f)
+					[
+						SNew(SButton)
+						.Text(LOCTEXT("OpenLog", "日志目录"))
+						.ToolTipText(LOCTEXT("OpenLogTip", "打开 Saved\\PackLogs：每次打包的完整日志都在这里"))
+						.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
+						.OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnOpenLogDirClicked))
+					]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(4.f, 0.f)
+					[
+						SNew(SButton)
+						.Text(LOCTEXT("ClearCache", "清除缓存"))
+						.ToolTipText(LOCTEXT("ClearCacheTip", "删掉能再生的缓存（StagedBuilds / Cooked / Shaders）腾磁盘空间；不会动 Intermediate\\Build、Content、归档目录"))
+						.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
+						.OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnClearCacheClicked))
+					]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(4.f, 0.f)
+					[
+						SNew(SButton)
+						.Text(LOCTEXT("OpenArchive", "产物目录"))
+						.ToolTipText(LOCTEXT("OpenArchiveTip",
+							"打开这次打出来的产物目录（生成碎片 / 上传的源目录就是它）。\n"
+							"拿错目录 → 旧包被当成新版本发出去，2026-10-26 就是这么翻的车。"))
+						.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
+						.OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnOpenArchiveDirClicked))
+					]
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(4.f, 0.f)
+					[
+						SNew(SButton)
+						.Text(LOCTEXT("CheckVersion", "版本自检"))
+						.ToolTipText(LOCTEXT("CheckVersionTip",
+							"核对产物目录里的 Version.json：版本号对不对、是不是这次刚打的、能不能发布。\n"
+							"生成碎片和上传之前点一下 —— 旧包/目录指错会当场红字拦下。"))
+						.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
+						.OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnCheckVersionClicked))
+					]
+					+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center).Padding(10.f, 0.f, 0.f, 0.f)
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("ToolsHint", "这些不改打包参数：复制命令 / 看历史日志 / 腾磁盘"))
 						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 12))
 						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 					]
@@ -974,6 +1106,43 @@ FString SCrossingChunkPanel::GetMapsSettingKey() const
 	return FString::Printf(TEXT("Maps_%s"), *Target);
 }
 
+// 打包配置同理，按目标分开记：服务器和客户端的默认值不一样（见 GetDefaultDevelopmentForTarget）。
+FString SCrossingChunkPanel::GetDevelopmentSettingKey() const
+{
+	const FString Target = (SelectedTarget.IsValid() && !SelectedTarget->Target.IsEmpty())
+		? SelectedTarget->Target
+		: FString(TEXT("Client"));
+	return FString::Printf(TEXT("DevelopmentBuild_%s"), *Target);
+}
+
+bool SCrossingChunkPanel::GetDefaultDevelopmentForTarget() const
+{
+	// 服务器默认 Development：房间的启动/回收全靠 UE_LOG 和日志文件排查，而 Shipping 把它们编掉
+	// （USE_LOGGING_IN_SHIPPING=0 / ALLOW_CONSOLE_IN_SHIPPING=0），出错只剩一个退出码。
+	// 客户端默认 Shipping：玩家不用开发模式，屏上打印也用不着。
+	return IsServerTarget();
+}
+
+bool SCrossingChunkPanel::ResolveDevelopmentForCurrentTarget() const
+{
+	// 服务器：固定 Development。界面上不给这个开关（见 Construct 里那行的 Visibility），
+	// 所以这里也不能看存档 —— 存档里若留着早先的 0，会静默打成 Shipping 服务器，
+	// 结果就是"开房间失败但一个字的日志都没有"。
+	if (IsServerTarget())
+	{
+		return true;
+	}
+
+	// 安卓没有 Development 配置（脚本直接拦）。
+	if (!IsWin64Target())
+	{
+		return false;
+	}
+
+	const FString SavedDev = LoadSetting(*GetDevelopmentSettingKey());
+	return SavedDev.IsEmpty() ? GetDefaultDevelopmentForTarget() : (SavedDev == TEXT("1"));
+}
+
 void SCrossingChunkPanel::RebuildMapList()
 {
 	if (!MapListBox.IsValid())
@@ -1122,11 +1291,10 @@ void SCrossingChunkPanel::LoadReport()
 	DeltaBaseAgeDays = -1;
 	bDeltaBaseExists = false;
 
-	// 报告按「目标」分开存：换目标 = 换一份报告
-	FString ReportDir = SelectedTarget.IsValid() ? SelectedTarget->ReportDir : TEXT("Win64-Client");
-	// 《快速验证》的报告是单独一份（见 Build-ChunkReport.ps1）：它不打 pak，
-	// 体积列本来就是 0，不能冲掉正式报告里的体积 / 变化。
-	ReportDir = ReportDir + ((SelectedMode.IsValid() && SelectedMode->Value == TEXT("Quick")) ? TEXT("-Quick") : TEXT(""));
+	// 报告按「目标 × 配置 × 模式」分开存，目录名由 GetActiveReportDir() 统一拼
+	// （后缀顺序要跟脚本一致：<Platform>-<Target>[-Development][-Quick]）。
+	// 以前这里是手拼一遍、且漏了 Development —— 开发模式下会去读 Shipping 的报告。
+	const FString ReportDir = GetActiveReportDir();
 	const FString Path = FPaths::Combine(
 		FPaths::ProjectSavedDir(), TEXT("PackLogs/ChunkReports"), ReportDir, TEXT("latest.json"));
 	if (!FPaths::FileExists(Path))
@@ -1522,7 +1690,6 @@ static FString FormatChunkBytes(int64 Bytes)
 TSharedRef<SWidget> SCrossingChunkPanel::MakeChunkRow(TSharedPtr<FCrossingChunkRule> Rule)
 {
 	const int32 ChunkId = Rule->ChunkId;
-	const bool bIsNewBucket = (ChunkId == INDEX_NONE);
 
 	// 体积列：报告里 containerStats=false 表示「这次没有容器文件可量」——安卓的 pak 打进
 	// APK/OBB，快速验证本来也不打 pak。这时写「不统计」，别用 0 B 骗人；
@@ -1886,6 +2053,7 @@ FString SCrossingChunkPanel::BuildExtraArgs() const
 	{
 		Extra += FString::Printf(TEXT(" -ReleaseRoot \\\"%s\\\""), *ReleaseRoot);
 	}
+	Extra += FString::Printf(TEXT(" -Configuration %s"), *GetConfigurationValue());
 	if (!MapsCsv.IsEmpty())
 	{
 		Extra += FString::Printf(TEXT(" -Maps \\\"%s\\\""), *MapsCsv);
@@ -1907,6 +2075,124 @@ FString SCrossingChunkPanel::BuildExtraArgs() const
 	return Extra;
 }
 
+FString SCrossingChunkPanel::DeriveReleaseRoot(const FString& InEffectiveArchiveDir) const
+{
+	const FString Dir = InEffectiveArchiveDir.TrimStartAndEnd();
+	if (Dir.IsEmpty())
+	{
+		return FString();
+	}
+	// 基线按配置分开：产物目录是共用的（上传脚本认死那条路径），
+	// 但基线混在一起会出事 —— 同一个 <根>\<版本>\<平台> 目录里，Development 的《版本更新》
+	// 会把正式基线整个覆盖掉（脚本那边会先删了重建），之后正式线算补丁就拿了开发版当基准。
+	return FPaths::Combine(Dir, bDevelopmentBuild ? TEXT("Release-Development") : TEXT("Release"));
+}
+
+FString SCrossingChunkPanel::GetEffectiveArchiveDir() const
+{
+	// Shipping 和 Development 【共用同一个产物目录】，不按配置分子目录 ——
+	// 发布/上传脚本（AxTools 的 -GamePackageRoot，如 F:\DaBaoV\Fantasy\Windows）认死了这条路径，
+	// 产物一挪，它就会拿旧包去传（不报错，更危险）。
+	// 两种配置的 exe / dll 文件名不同，同名文件（pak、资源）由后打的那次覆盖 ——
+	// 脚本会在客户端打包时把「上一种配置的二进制」删掉，避免目录里同时躺着两个 exe。
+	return OutputDir;
+}
+
+FString SCrossingChunkPanel::GetConfigurationValue() const
+{
+	return bDevelopmentBuild ? TEXT("Development") : TEXT("Shipping");
+}
+
+bool SCrossingChunkPanel::IsDevelopmentAvailable() const
+{
+	// 硬限制来自脚本：Pack-CrossingVoid.ps1 在 -Configuration Development 且平台不是 Win64 时直接 throw
+	// （安卓的测试包仍然是 Shipping）。服务器也走 Win64 散件，可以开 —— Development 下日志/控制台本来就开着。
+	return IsWin64Target();
+}
+
+bool SCrossingChunkPanel::IsWin64Target() const
+{
+	return SelectedTarget.IsValid() && SelectedTarget->Platform == TEXT("Win64");
+}
+
+bool SCrossingChunkPanel::IsServerTarget() const
+{
+	return SelectedTarget.IsValid() && SelectedTarget->Target == TEXT("Server");
+}
+
+bool SCrossingChunkPanel::NeedsBaseline() const
+{
+	// 服务器：散件走 git，不分包也不建基线。
+	if (IsServerTarget())
+	{
+		return false;
+	}
+	// 《快速验证》：只 cook + stage 看分块归属，不建基线（连 pak 都不打）。
+	return !(SelectedMode.IsValid() && SelectedMode->Value == TEXT("Quick"));
+}
+
+FText SCrossingChunkPanel::GetDevelopmentHint() const
+{
+	if (!IsDevelopmentAvailable())
+	{
+		return LOCTEXT("DevHintAndroid", "安卓没有 Development 配置（脚本会直接拦）—— 测试包用 Shipping");
+	}
+
+	if (bDevelopmentBuild)
+	{
+		// 产物目录不变（两种配置共用，上传脚本才认得到），只有基线换了一条。
+		// 服务器走散件（不分包、不建基线），所以那半句对它没意义，只说日志。
+		if (SelectedTarget.IsValid() && SelectedTarget->Target == TEXT("Server"))
+		{
+			return LOCTEXT("DevHintServer", "服务器 Development：UE_LOG / 日志文件 / 控制台都在（服务器默认就是这个）");
+		}
+		return FText::FromString(FString::Printf(
+			TEXT("屏幕打印可见；产物照旧在 %s（上传不用改），基线走 Release-Development"),
+			*GetEffectiveArchiveDir()));
+	}
+
+	// 服务器发 Shipping = 线上没有任何日志：这是"开房间失败查不到原因"的根源，必须提醒
+	if (SelectedTarget.IsValid() && SelectedTarget->Target == TEXT("Server"))
+	{
+		return LOCTEXT("DevHintServerShipping",
+			"服务器 Shipping：UE_LOG 和控制台被编掉 —— 开房间/回收出问题只会剩一个退出码（排障请勾上）");
+	}
+
+	return LOCTEXT("DevHintShipping", "正式包（Shipping）：屏幕打印被编掉，看不到 PrintString");
+}
+
+void SCrossingChunkPanel::SetDevelopmentBuild(bool bEnable)
+{
+	if (bDevelopmentBuild == bEnable)
+	{
+		return;
+	}
+
+	bDevelopmentBuild = bEnable;
+
+	// 产物目录不变（两种配置共用同一条路径），但基线跟着配置走：Release / Release-Development。
+	// 这一行必须重算，否则会拿 Shipping 的基线去建/算 Development 的包。
+	ReleaseRoot = DeriveReleaseRoot(GetEffectiveArchiveDir());
+
+	SaveSettings();
+	RefreshRules();    // 变化列读的是「对应配置那一份」报告（目录名带 -Development），要重读
+	RefreshStatus();   // 报告 / 产物 / 基线三格也都按配置分开
+}
+
+FString SCrossingChunkPanel::GetActiveReportDir() const
+{
+	FString ReportDir = SelectedTarget.IsValid() ? SelectedTarget->ReportDir : TEXT("Win64-Client");
+	if (bDevelopmentBuild)
+	{
+		ReportDir += TEXT("-Development");
+	}
+	if (SelectedMode.IsValid() && SelectedMode->Value == TEXT("Quick"))
+	{
+		ReportDir += TEXT("-Quick");
+	}
+	return ReportDir;
+}
+
 FString SCrossingChunkPanel::BuildClearCacheCommand() const
 {
 	const FString Script = FCrossingChunkRuleService::GetScriptPath(TEXT("Pack-CrossingVoid.ps1"));
@@ -1921,8 +2207,8 @@ FString SCrossingChunkPanel::BuildStatusCommand() const
 	const FString Mode = SelectedMode.IsValid() ? SelectedMode->Value : TEXT("Quick");
 	// 内层引号要写成 \"（原因见 BuildExtraArgs）
 	return FString::Printf(
-		TEXT("& '%s' -Status -ProjectRoot \\\"%s\\\" -Mode %s -Platform %s -Target %s -ReleaseVersion \\\"%s\\\" -ArchiveDir \\\"%s\\\" -ReleaseRoot \\\"%s\\\""),
-		*Script, *FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()), *Mode, *Platform, *Target, *GetReleaseVersion(), *OutputDir, *ReleaseRoot);
+		TEXT("& '%s' -Status -ProjectRoot \\\"%s\\\" -Mode %s -Platform %s -Target %s -Configuration %s -ReleaseVersion \\\"%s\\\" -ArchiveDir \\\"%s\\\" -ReleaseRoot \\\"%s\\\""),
+		*Script, *FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()), *Mode, *Platform, *Target, *GetConfigurationValue(), *GetReleaseVersion(), *OutputDir, *ReleaseRoot);
 }
 
 FString SCrossingChunkPanel::DeriveReleaseVersion(const FString& InPlayerVersion)
@@ -2279,25 +2565,30 @@ FReply SCrossingChunkPanel::OnPackClicked()
 	}
 
 	// ---- 前置检查：这次需不需要编译？----
-	// 目标 Shipping 二进制不存在时，打包脚本会给 UAT 加 -build；
-	// 但编辑器开着（Live Coding 激活）时，UE 不允许从外部编译，
-	// UBT 会直接抛 "Unable to build while Live Coding is active"。
-	// 与其跑到一半失败，不如在点的那一刻就说清楚、并给出可执行的做法。
+	// 脚本自己会判断三件事：收据不存在、源码比【当前配置】的二进制新、收据里记的插件路径
+	// 已经不存在。命中任意一条就先单独编译这个目标，再让 UAT 带 -nocompile 走。
+	// 单独编译只针对这个目标，不会被 Live Coding 的互斥体挡住，所以编辑器不用关。
+	// 这里只提示、不拦打包 —— 判断规则统一交给脚本，避免两边各算一套。
+	// 收据名带配置后缀：开发模式是 -Win64-Development.target，Shipping 那份不存在是正常的。
 	const bool bServer = SelectedTarget.IsValid() && SelectedTarget->Target == TEXT("Server");
-	const FString TargetName = bServer ? TEXT("CrossingVoidServer") : TEXT("CrossingVoid");
-	const FString ShippingBinary = FPaths::ConvertRelativePathToFull(
-		FPaths::ProjectDir() / TEXT("Binaries/Win64/") / (TargetName + TEXT("-Win64-Shipping.target")));
-	if (!FPaths::FileExists(ShippingBinary))
+	// target 名 = 工程名（Game 目标）；服务器按 UE 惯例加 Server 后缀。
+	// 真正的判断在脚本里（它会读 Source\*.Target.cs），这里只用于提示缺哪个收据。
+	const FString ProjectName = FApp::GetProjectName();
+	const FString TargetName = bServer ? (ProjectName + TEXT("Server")) : ProjectName;
+	const FString ConfigValue = GetConfigurationValue();
+	const FString TargetReceipt = FPaths::ConvertRelativePathToFull(
+		FPaths::ProjectDir() / TEXT("Binaries/Win64/")
+		/ FString::Printf(TEXT("%s-Win64-%s.target"), *TargetName, *ConfigValue));
+	if (!FPaths::FileExists(TargetReceipt))
 	{
-		// 打包不负责编译 —— 所以缺二进制时不硬闯（硬闯的话 UAT 会顺带编编辑器目标，
-		// 而编辑器开着时 Live Coding 会挡住它：Unable to build while Live Coding is active）。
+		// 缺二进制不硬闯：脚本会先单独编这个目标，这里只把「为什么要多等一会儿」说清楚。
 		StatusMessage = FString::Printf(
-			TEXT("这个目标还没编译过（缺 %s-Win64-Shipping）。打包脚本会先单独把它编出来再继续 —— ")
+			TEXT("这个目标还没编译过（缺 %s-Win64-%s）。打包脚本会先单独把它编出来再继续 —— ")
 			TEXT("单独编译只针对这个目标，不会被 Live Coding 挡住，所以编辑器不用关。"),
-			*TargetName);
+			*TargetName, *ConfigValue);
 		LogText += FString::Printf(
 			TEXT("\n[前置检查] 缺少 %s\n           %s\n           （第一次会编译得久一些，之后就不用再编了）\n"),
-			*ShippingBinary, *StatusMessage);
+			*TargetReceipt, *StatusMessage);
 		if (LogBox.IsValid()) { LogBox->SetText(FText::FromString(LogText)); }
 		// 注意：这里【不 return】—— 让打包照常启动，脚本会先把目标编好。
 	}
@@ -2408,6 +2699,7 @@ void SCrossingChunkPanel::StopPack()
 		TickerHandle.Reset();
 	}
 	bPacking = false;
+	bRunIsClearCache = false;
 
 	// 中途被杀时，脚本末尾的"还原 DefaultGame.ini"没机会执行 —— 这里替它收尾，
 	// 否则工程配置会停在「只 cook 勾选的那几张地图」的临时状态。
@@ -2427,14 +2719,7 @@ void SCrossingChunkPanel::StopPack()
 		LogText += TEXT("\n[已停止] 打包已中断\n");
 	}
 	if (LogBox.IsValid()) { LogBox->SetText(FText::FromString(LogText)); }
-	RestoreLiveCodingAfterPack();
 	StatusMessage = TEXT("已停止打包（要改输出目录就直接改，改完再点开始）");
-}
-
-void SCrossingChunkPanel::RestoreLiveCodingAfterPack()
-{
-	// 打包不再碰 Live Coding（打包一律不编译 → 根本不会撞上它的互斥体），
-	// 这个函数保留成空实现，免得调用点删来删去。
 }
 
 // ---------------------------------------------------------------------------
@@ -2485,11 +2770,12 @@ void SCrossingChunkPanel::ApplySavedSettings()
 		OutputDir = SavedOutputDir;
 	}
 
-	const FString SavedReleaseRoot = LoadSetting(TEXT("ReleaseRoot"));
-	if (!SavedReleaseRoot.IsEmpty())
-	{
-		ReleaseRoot = SavedReleaseRoot;
-	}
+	// 开发模式：必须在下面派生 ReleaseRoot 之前定下来 —— 基线根目录跟着配置走。
+	// 服务器固定 Development、安卓固定 Shipping、Windows 客户端读存档（默认 Shipping）。
+	bDevelopmentBuild = ResolveDevelopmentForCurrentTarget();
+
+	// ReleaseRoot 不再单独保存：固定跟随 OutputDir，避免换工程后还指向旧路径。
+	ReleaseRoot = DeriveReleaseRoot(GetEffectiveArchiveDir());
 
 	// 勾选的地图：先记下来，ReloadMaps() 扫描完之后按这份清单恢复勾选。
 	// 按目标分开存（服务器打的图跟客户端不一样）；旧的单键 "Maps" 当兜底，只有第一次会用到。
@@ -2531,10 +2817,12 @@ void SCrossingChunkPanel::SaveSettings()
 	SaveSetting(TEXT("Target"), SelectedTarget.IsValid() ? SelectedTarget->Label : TEXT(""));
 	SaveSetting(TEXT("Mode"), SelectedMode.IsValid() ? SelectedMode->Value : TEXT(""));
 	SaveSetting(TEXT("OutputDir"), OutputDir);
-	SaveSetting(TEXT("ReleaseRoot"), ReleaseRoot);
+	// ReleaseRoot 不再落盘：它由 OutputDir 派生，存旧值只会造成下一次换目录后对不上。
 	SaveSetting(*GetMapsSettingKey(), MapsCsv);   // 勾选的地图按目标分开记
 	SaveSetting(TEXT("PlayerVersion"), PlayerVersion);
 	SaveSetting(TEXT("CookProcessCount"), FString::FromInt(CookProcessCount));
+	// 开发模式按目标分开记：服务器默认 Development、客户端默认 Shipping，各自记住自己的选择
+	SaveSetting(*GetDevelopmentSettingKey(), bDevelopmentBuild ? TEXT("1") : TEXT("0"));
 }
 
 bool SCrossingChunkPanel::TickPump(float DeltaSeconds)
@@ -2565,8 +2853,10 @@ bool SCrossingChunkPanel::TickPump(float DeltaSeconds)
 	const bool bWasClearCache = bRunIsClearCache;
 	bRunIsClearCache = false;
 
-	LogText += FString::Printf(TEXT("\n===== %s进程结束，返回码 %d =====\n"), bWasClearCache ? TEXT("清缓存") : TEXT("打包"), ReturnCode);
+	const TCHAR* RunLabel = bWasClearCache ? TEXT("清缓存") : TEXT("打包");
+	LogText += FString::Printf(TEXT("\n===== %s进程结束，返回码 %d =====\n"), RunLabel, ReturnCode);
 	if (LogBox.IsValid()) { LogBox->SetText(FText::FromString(LogText)); }
+
 	if (bWasClearCache)
 	{
 		StatusMessage = (ReturnCode == 0) ? TEXT("缓存已清理") : TEXT("清缓存失败 —— 看下面的日志");
@@ -2584,9 +2874,9 @@ bool SCrossingChunkPanel::TickPump(float DeltaSeconds)
 	FPlatformProcess::CloseProc(ProcHandle);
 	ProcHandle.Reset();
 	bPacking = false;
-	RestoreLiveCodingAfterPack();
 
 	TickerHandle.Reset();
+
 	RefreshRules();   // 报告是脚本刚产出的，重新读一遍
 	RefreshStatus();  // 产物 / 基线的状态也跟着变
 
@@ -2643,9 +2933,67 @@ FReply SCrossingChunkPanel::OnOpenLogDirClicked()
 	return FReply::Handled();
 }
 
+FReply SCrossingChunkPanel::OnOpenArchiveDirClicked()
+{
+	const FString Dir = GetEffectiveArchiveDir();
+	if (Dir.IsEmpty() || !FPaths::DirectoryExists(Dir))
+	{
+		StatusMessage = FString::Printf(TEXT("产物目录还不存在：%s（先打一次包）"), *Dir);
+		return FReply::Handled();
+	}
+	FPlatformProcess::ExploreFolder(*Dir);
+	return FReply::Handled();
+}
+
+FString SCrossingChunkPanel::BuildVersionCheckCommand() const
+{
+	const FString Script = FCrossingChunkRuleService::GetScriptPath(TEXT("Test-PackageVersion.ps1"));
+	// 内层引号要写成 \"（原因见 BuildExtraArgs）
+	return FString::Printf(
+		TEXT("& '%s' -ArchiveDir \\\"%s\\\" -ExpectedVersion \\\"%s\\\""),
+		*Script, *GetEffectiveArchiveDir(), *PlayerVersion);
+}
+
+FReply SCrossingChunkPanel::OnCheckVersionClicked()
+{
+	const FString Script = FCrossingChunkRuleService::GetScriptPath(TEXT("Test-PackageVersion.ps1"));
+	if (!FPaths::FileExists(Script))
+	{
+		StatusMessage = FString::Printf(TEXT("找不到自检脚本：%s"), *Script);
+		return FReply::Handled();
+	}
+
+	// 同步跑（1 秒级）。不走 LaunchScript 是因为那个状态机只认「打包 / 清缓存」两种收尾文案，
+	// 结束时会误报「打包完成」。这里要的只是"跑一次、把结论摆出来"。
+	const FString Command = BuildVersionCheckCommand();
+	FString Output;
+	if (!RunScriptCapture(Command, Output))
+	{
+		StatusMessage = TEXT("版本自检没跑起来 —— 见日志");
+		return FReply::Handled();
+	}
+
+	LogText = FString::Printf(TEXT("> %s\n%s"), *Command, *Output);
+	if (LogBox.IsValid())
+	{
+		LogBox->SetText(FText::FromString(LogText));
+		LogBox->GoTo(ETextLocation::EndOfDocument);
+	}
+
+	// 脚本只在通过时打印这句；不通过时会有 [FAIL] 行
+	StatusMessage = Output.Contains(TEXT("自检通过"))
+		? FString::Printf(TEXT("版本自检通过：%s · %s"), *PlayerVersion, *GetEffectiveArchiveDir())
+		: TEXT("版本自检不通过 —— 别拿它生成碎片/发布（原因见日志红字）");
+	return FReply::Handled();
+}
+
 FText SCrossingChunkPanel::GetPackButtonText() const
 {
-	return bPacking ? LOCTEXT("StopPackLabel", "停止打包") : LOCTEXT("StartPack", "开始打包");
+	if (bPacking)
+	{
+		return LOCTEXT("StopPackLabel", "停止打包");
+	}
+	return LOCTEXT("StartPack", "开始打包");
 }
 
 void SCrossingChunkPanel::OnNameCommitted(const FText& NewText, ETextCommit::Type CommitType, int32 ChunkId)

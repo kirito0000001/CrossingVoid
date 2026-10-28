@@ -10,12 +10,14 @@ struct FCrossingChunkRule;
 class FCrossingChunkLogMarshaller;   // 日志着色（定义在 .cpp 里，照引擎 Output Log 的做法）
 
 /**
- * 《二游打包》页（第一版）：显示分块规则 + 改名。
+ * 《二游打包》页。
  *
- * 接下来要加的（按设计文档 `Docs\2026-09-19-二游打包页设计.md`）：
- *   · chunk 体积/变化（读 Saved\PackLogs\ChunkReports\...\latest.json）
- *   · 未分类清单 + 一键指派
- *   · 打包按钮 + 实时日志
+ * 左栏：分块规则（号 / 名字 / 分类 / 目录数 / 文件数 / 体积 / 变化 / 解散）、
+ *       目标 × 模式、地图勾选、输出目录 / 版本 / 基线、状态行。
+ * 右栏：未分类清单（《版本更新》下换成待划分的补丁批次）、实时打包日志。
+ *
+ * 规则读写走 FCrossingChunkRuleService；打包、清缓存、状态查询全部交给
+ * 插件自带的 Tools\*.ps1 —— 这一页只负责拼命令、起进程、把结果读回来显示。
  */
 class SCrossingChunkPanel : public SCompoundWidget
 {
@@ -88,8 +90,6 @@ private:
 	FReply OnClearCacheClicked();
 	/** 中止正在跑的打包：杀进程树，并把被临时改写的地图清单还原回去。 */
 	void StopPack();
-	/** 打包结束后把临时关掉的 Live Coding 恢复回来。 */
-	void RestoreLiveCodingAfterPack();
 
 	/** 记住/恢复上次的选项（输出目录、目标、模式、勾选的地图），存在编辑器用户配置里。 */
 	void ApplySavedSettings();
@@ -98,6 +98,15 @@ private:
 	static void SaveSetting(const TCHAR* Key, const FString& Value);
 	FReply OnCopyCommandClicked();
 	FReply OnOpenLogDirClicked();
+	/** 打开当前产物目录 —— 生成碎片/上传的源目录就是它，省得手输指到旧路径上。 */
+	FReply OnOpenArchiveDirClicked();
+	/**
+	 * 版本自检：跑 Tools\Test-PackageVersion.ps1，核对产物目录里的 Version.json（版本/时间/模式）。
+	 * 拿错目录、版本对不上、包太旧都会被拦下 —— 2026-10-26 那次「旧包拿新号」就是这么发生的。
+	 */
+	FReply OnCheckVersionClicked();
+	/** 版本自检命令（日志首行也用它）。 */
+	FString BuildVersionCheckCommand() const;
 	FReply OnLocateClicked(FString Folder);
 	FReply OnDisbandClicked(int32 ChunkId);
 	FReply OnUndoDisbandClicked();
@@ -152,6 +161,54 @@ private:
 	FString BuildStatusCommand() const;
 	/** 拼 -ArchiveDir / -Maps 这些附加参数（空值就不加）。 */
 	FString BuildExtraArgs() const;
+	/**
+	 * 基线根目录 = <产物目录>\Release（正式）/ <产物目录>\Release-Development（开发）。
+	 * 基线必须按配置分开，产物目录则共用（见 GetEffectiveArchiveDir）。
+	 */
+	FString DeriveReleaseRoot(const FString& InEffectiveArchiveDir) const;
+	/** 实际产物目录：两种配置共用同一个，不按配置分子目录（上传脚本认死那条路径）。 */
+	FString GetEffectiveArchiveDir() const;
+	/** Shipping / Development。 */
+	FString GetConfigurationValue() const;
+	/** 开发模式能不能选：脚本只支持 Win64（安卓会直接 throw）。 */
+	bool IsDevelopmentAvailable() const;
+	/** 当前目标是不是 Win64（客户端或服务器）—— Development 配置只支持它。 */
+	bool IsWin64Target() const;
+	/** 当前目标是不是服务器（散件走 git：不分包、不建基线、不产报告）。 */
+	bool IsServerTarget() const;
+	/**
+	 * 这次打包会不会建/用基线。
+	 * 服务器不分包、不建基线；《快速验证》只 cook + stage、也不建基线。
+	 * 界面据此隐藏「基线版本 / 基线目录 / 基线位置」这三处 —— 不建基线时它们只是噪音。
+	 */
+	bool NeedsBaseline() const;
+	/** 开发模式的存档键：按目标分开记（DevelopmentBuild_Client / _Server）。 */
+	FString GetDevelopmentSettingKey() const;
+	/**
+	 * 该目标的默认配置：服务器 = Development，客户端 = Shipping。
+	 * 理由：服务器的房间生命周期/回收全靠 UE_LOG 排查，而 Shipping 会把 UE_LOG 和控制台
+	 * 整段编掉（USE_LOGGING_IN_SHIPPING=0 / ALLOW_CONSOLE_IN_SHIPPING=0），
+	 * 线上开房间失败时只剩一个退出码。手动勾选优先，每个目标的选择会被记住。
+	 */
+	bool GetDefaultDevelopmentForTarget() const;
+	/**
+	 * 按当前目标算出该用哪个配置。
+	 *   · 服务器：**固定 Development**，不看存档（界面上不提供这个开关，
+	 *     存档要是留着旧的 0，会悄悄打成 Shipping —— 服务器就一个字日志都没有了）；
+	 *   · 安卓：固定 Shipping（脚本直接拦 Development）；
+	 *   · Windows 客户端：读存档，没存过用默认值（Shipping）。
+	 */
+	bool ResolveDevelopmentForCurrentTarget() const;
+	/**
+	 * 切开发模式。
+	 * 产物目录（<输出目录>\Development）、由它派生的基线目录、报告目录三者全跟着变，
+	 * 所以不能只改一个 bool：还要重派生 ReleaseRoot、重读报告、刷状态行。
+	 */
+	void SetDevelopmentBuild(bool bEnable);
+	/** 「运行设置（额外）」那一行的说明文字（安卓下写清为什么是灰的）。 */
+	FText GetDevelopmentHint() const;
+	/** 当前报告目录名（带 Development / Quick 后缀）。 */
+	FString GetActiveReportDir() const;
 	/**
 	 * 起一个 powershell 跑脚本，输出进下面的日志区。
 	 * ScriptBody 是 -Command 里的完整内容（如 `& 'xx.ps1' -ClearCache`）。
@@ -279,7 +336,7 @@ private:
 	TArray<TSharedPtr<FChoice>> ModeOptions;    // 快速验证 / 正式发布 / 打补丁
 	TSharedPtr<FChoice> SelectedMode;
 	FString OutputDir;   // 产物目录（传给脚本的 -ArchiveDir）
-	FString ReleaseRoot; // 基线（Releases）根目录（传给脚本的 -ReleaseRoot）
+	FString ReleaseRoot; // 基线根目录：由 OutputDir 派生 <OutputDir>\Release（只读）
 	FString MapsCsv;     // 选定地图（逗号分隔；空 = 用 DefaultGame.ini 的 +MapsToCook）
 	FString PlayerVersion;   // 给玩家看的版本号（打包时写进安卓 VersionDisplayName）
 	/**
@@ -287,6 +344,8 @@ private:
 	 * 1 = 单进程 cook（引擎默认，最稳）；>1 = MPCook：1 个 director + (N-1) 个 cook worker。
 	 */
 	int32 CookProcessCount = 1;
+	/** 开发模式（Development）：测试用，PrintString/日志/控制台可见；产物走 <OutputDir>\Development。 */
+	bool bDevelopmentBuild = false;
 	// ---- 状态行（RefreshStatus 里填好，界面直接显示）----
 	FString StatusReportText;
 	FString StatusArtifactText;
@@ -310,6 +369,4 @@ private:
 	bool bPacking = false;
 	/** 当前这一轮是清缓存（决定结束时的提示文案）。 */
 	bool bRunIsClearCache = false;
-	/** 打包期间是否临时关掉了 Live Coding（打完要恢复）。 */
-	bool bDisabledLiveCoding = false;
 };
