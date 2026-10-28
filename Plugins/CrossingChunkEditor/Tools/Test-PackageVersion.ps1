@@ -6,10 +6,14 @@
   2026-10-26 那次事故：安卓碎片用的源目录里躺着 10-11 打的 APK/OBB（版本 0.6.0），
   但这次发布用的是新版本号 —— 结果新号发的是旧包，而且没有任何一处会报错。
 
-  Pack-CrossingVoid.ps1 每次打包成功后会在归档根写版本戳。2026-10-28 起固定三份：
+  Pack-CrossingVoid.ps1 每次打包成功后会在归档根写版本戳。2026-10-28 起按平台/目标/配置/模式
+  各放一套（互不覆盖），目录是 <归档根>\Version\<Scope>\，里面固定三份：
     Version-Full.json   整包（kind=Full）
     Version-Patch.json  补丁（kind=Patch，带 baseVersion = 基于哪条线上基线）
     Latest.json         指针：最后一次写的是哪份、生成时间、插件版本
+  Scope 的命名：<Platform>-<Target>[-Development][-Quick]，和报告目录同一套规则。
+  例：Win64-Client / Android-Client / Win64-Client-Development / Win64-Server-Quick。
+
   本脚本只认 Latest.json 这个指针：它指向哪份就读哪份，缺失或指向的文件不存在都直接判失败。
 
   本脚本就是"发布前先看一眼"的那道闸：拿错目录、版本对不上、包太旧、补丁基线过期、
@@ -23,7 +27,21 @@
   退出码：0 = 通过，1 = 不通过（原因逐条打在屏幕上，最后一条 [FAIL] 就是拦下它的理由）。
 
 .PARAMETER ArchiveDir
-  归档根目录（面板上的「输出目录」，脚本的 -ArchiveDir）。版本戳就在这一层。
+  归档根目录（面板上的「输出目录」，脚本的 -ArchiveDir）。版本戳在 <ArchiveDir>\Version\<Scope>\ 下。
+
+.PARAMETER Platform
+  Android / Win64。给了就按它拼 Scope 去定位版本戳（和 -Target / -Configuration / -Mode 一起）。
+  留空 = 自动找：Version 下只有一套就用它，有多套就报错要求指定 —— 不猜。
+
+.PARAMETER Target
+  Client / Server（默认 Client）。
+
+.PARAMETER Configuration
+  Shipping / Development（默认 Shipping）。Development 会多一个 -Development 后缀。
+
+.PARAMETER Mode
+  Base / Patch / Quick。Quick 会多一个 -Quick 后缀；Base 和 Patch 共用同一个目录
+  （Latest.json 指向最后一次写的那份）。留空 = 不带模式后缀。
 
 .PARAMETER ExpectedVersion
   这次打算发的版本号。留空 = 只检查"有没有版本戳 / 包新不新"，不比对版本。
@@ -31,10 +49,6 @@
 .PARAMETER ExpectedBaseVersion
   期望的基线版本（补丁才有）。给了就校验 baseVersion 是否一致 —— 补丁是相对哪条线上基线
   生成的，对不上就是"在旧基线上打的补丁"，发出去会和线上版本错位。
-
-.PARAMETER Platform
-  Android / Win64。给了就顺带确认该平台的产物文件真的在（Android：.apk + .obb），
-  并核对 Latest.json 指向的是不是这个平台（不一致只 WARN，因为刚打过另一个平台是正常的）。
 
 .PARAMETER MaxAgeHours
   版本戳超过这么多小时就当"旧包"（默认 24）。
@@ -53,6 +67,9 @@ param(
     [string]$ExpectedVersion = '',
     [string]$ExpectedBaseVersion = '',
     [ValidateSet('', 'Android', 'Win64')][string]$Platform = '',
+    [ValidateSet('', 'Client', 'Server')][string]$Target = 'Client',
+    [ValidateSet('', 'Shipping', 'Development')][string]$Configuration = 'Shipping',
+    [ValidateSet('', 'Base', 'Patch', 'Quick')][string]$Mode = '',
     [int]$MaxAgeHours = 24,
     [switch]$VerifyHashes,
     [string]$ExpectedNetworkVersion = ''
@@ -78,13 +95,54 @@ if (-not (Test-Path -LiteralPath $ArchiveDir)) {
     exit 1
 }
 
-# ---- 找版本戳：只认 Latest.json 这个指针 ----
-# 不再按固定名去猜：指针缺失/指向的文件不存在，本身就说明这个目录不完整，必须拦下。
-$LatestPath = Join-Path $ArchiveDir 'Latest.json'
+# ---- 定位版本戳目录：<ArchiveDir>\Version\<Scope> ----
+# Scope = <Platform>-<Target>[-Development][-Quick]，和报告目录同一套规则。
+# 不传 -Platform 时自动找：只有一套就用它，有多套就报错要求指定 —— 不猜。
+$VersionRoot = Join-Path $ArchiveDir 'Version'
+$StampScope = ''
+if (-not [string]::IsNullOrWhiteSpace($Platform)) {
+    $StampScope = "$Platform-$Target"
+    if ($Configuration -eq 'Development') { $StampScope += '-Development' }
+    if ($Mode -eq 'Quick') { $StampScope += '-Quick' }
+}
+
+if ([string]::IsNullOrWhiteSpace($StampScope)) {
+    $Scopes = @(Get-ChildItem -LiteralPath $VersionRoot -Directory -ErrorAction SilentlyContinue)
+    if ($Scopes.Count -eq 1) {
+        $StampScope = $Scopes[0].Name
+        Ok ("只找到一套版本戳，用它：{0}" -f $StampScope)
+    }
+    elseif ($Scopes.Count -eq 0) {
+        Bad "没有版本戳目录：$VersionRoot（这个目录还没打过包？）"
+        Write-Host ''
+        Write-Host '自检不通过' -ForegroundColor Red
+        exit 1
+    }
+    else {
+        Bad ("有 {0} 套版本戳，必须用 -Platform / -Target / -Configuration / -Mode 指定：{1}" -f $Scopes.Count, ($Scopes.Name -join ' / '))
+        Write-Host ''
+        Write-Host '自检不通过' -ForegroundColor Red
+        exit 1
+    }
+}
+
+$StampDir = Join-Path $VersionRoot $StampScope
+if (-not (Test-Path -LiteralPath $StampDir)) {
+    $Existing = @(Get-ChildItem -LiteralPath $VersionRoot -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+    Bad ("版本戳目录不存在：{0}（现有：{1}）" -f $StampDir, $(if ($Existing.Count) { $Existing -join ' / ' } else { '一个都没有' }))
+    Write-Host ''
+    Write-Host '自检不通过' -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "  版本戳   : $StampScope"
+
+# ---- 只认 Latest.json 这个指针 ----
+# 指针缺失/指向的文件不存在，本身就说明这个目录不完整，必须拦下。
+$LatestPath = Join-Path $StampDir 'Latest.json'
 if (-not (Test-Path -LiteralPath $LatestPath)) {
-    Bad "没有版本戳指针：$LatestPath"
-    Write-Host '         这个目录不是用 CrossingChunkEditor 打的包（或 Latest.json 被删了）。' -ForegroundColor DarkGray
-    Write-Host '         旧包被当成新包发出去，通常就是从这里开始的 —— 目录指错了，没人发现。' -ForegroundColor DarkGray
+    Bad "这个平台还没有版本戳指针：$LatestPath"
+    Write-Host '         目录在，但没有 Latest.json —— 上次打包可能没走到写戳那一步。' -ForegroundColor DarkGray
     Write-Host ''
     Write-Host '自检不通过' -ForegroundColor Red
     exit 1
@@ -100,6 +158,12 @@ catch {
     exit 1
 }
 
+# 指针里的 scope 必须和所在目录一致：防手改、防把另一个平台的戳拷过来
+$LatestScope = [string]$Latest.scope
+if (-not [string]::IsNullOrWhiteSpace($LatestScope) -and $LatestScope -ne $StampScope) {
+    Bad ("Latest.json 里的 scope 是 '{0}'，但所在目录是 '{1}' —— 文件被挪过？" -f $LatestScope, $StampScope)
+}
+
 if ([string]::IsNullOrWhiteSpace([string]$Latest.latestFile)) {
     Bad 'Latest.json 没有 latestFile —— 不知道该读哪份版本戳'
     Write-Host ''
@@ -107,7 +171,7 @@ if ([string]::IsNullOrWhiteSpace([string]$Latest.latestFile)) {
     exit 1
 }
 
-$StampPath = Join-Path $ArchiveDir ([string]$Latest.latestFile)
+$StampPath = Join-Path $StampDir ([string]$Latest.latestFile)
 if (-not (Test-Path -LiteralPath $StampPath)) {
     Bad ("Latest.json 指向的 {0} 不存在 —— 指针过期，目录不完整" -f $Latest.latestFile)
     Write-Host ''
@@ -127,10 +191,12 @@ catch {
 
 $Ver = [string]$Stamp.version
 $ArtifactDir = [string]$Stamp.artifactDir
-$Mode = [string]$Stamp.mode
+# 注意别写成 $Mode —— 那是参数（用来拼 Scope），覆盖掉会让后面"能不能发布"的判断读错东西
+$StampMode = [string]$Stamp.mode
 $Config = [string]$Stamp.configuration
 $BaseVer = [string]$Stamp.baseVersion
 $Kind = [string]$Stamp.kind
+$StampTarget = [string]$Stamp.target
 $GeneratedAt = [string]$Stamp.generatedAt
 
 Ok ("版本戳：{0}（kind={1}）" -f (Split-Path -Leaf $StampPath), $Kind)
@@ -226,11 +292,15 @@ else {
 }
 
 # ---- 这批包能不能发 ----
-if ($Mode -eq 'Quick') {
+# 服务器散件在面板里也是按 Quick 传的（它不分包、走 git），别把它当成"快速验证"拦掉。
+if ($StampTarget -eq 'Server') {
+    Ok "模式：服务器散件（不分包，走 git）· 配置：$Config"
+}
+elseif ($StampMode -eq 'Quick') {
     Bad '《快速验证》的产物：不打 pak、不能发布'
 }
 else {
-    Ok "模式：$Mode · 配置：$Config"
+    Ok "模式：$StampMode · 配置：$Config"
 }
 
 # ---- 产物文件在不在 ----

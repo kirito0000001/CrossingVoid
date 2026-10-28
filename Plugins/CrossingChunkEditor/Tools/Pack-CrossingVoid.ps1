@@ -2256,6 +2256,27 @@ foreach ($Run in $RunList) {
         # 三个都不能进 Windows/Android 子目录 —— 否则会被启动器的整目录枚举一起发布。
         $ArtifactDir = if ($PackTarget -eq 'Server') { 'WindowsServer' } else { $PlatformDir }
         $ArtifactPath = Join-Path $OutDir $ArtifactDir
+
+        # 版本戳按「平台-目标-配置-模式」各放一份：Windows / 安卓 / 服务器互不覆盖。
+        # 目录名和报告目录（Saved\PackLogs\ChunkReports\...）用同一套规则，排查时一一对应。
+        # 放在 <ArchiveDir>\Version\ 下，不进 Windows/Android 子目录 —— 那里会被启动器整目录发布。
+        $StampScope = "$Platform-$PackTarget"
+        if ($Configuration -eq 'Development') { $StampScope += '-Development' }
+        if ($Mode -eq 'Quick') { $StampScope += '-Quick' }
+        $StampDir = Join-Path $OutDir "Version\$StampScope"
+        if (-not (Test-Path -LiteralPath $StampDir)) {
+            New-Item -ItemType Directory -Path $StampDir -Force | Out-Null
+        }
+
+        # 根目录上属于旧布局的戳（含 2026-10-28 之前的 Version.json）一律清掉，
+        # 免得发布那边读到一个没人维护的旧文件。
+        foreach ($OldName in @('Version.json', 'Version-Full.json', 'Version-Patch.json', 'Latest.json')) {
+            $OldPath = Join-Path $OutDir $OldName
+            if (Test-Path -LiteralPath $OldPath) {
+                Remove-Item -LiteralPath $OldPath -Force -ErrorAction SilentlyContinue
+            }
+        }
+
         $GeneratedAt = (Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz')
         # Base / Quick 都是整包（Quick 只是不建基线、不打 pak，自检会按 mode 拦发布）；
         # 只有 Patch 是补丁，需要 baseVersion。
@@ -2308,6 +2329,7 @@ foreach ($Run in $RunList) {
             project        = $ProjectName
             archiveDir     = $OutDir
             artifactDir    = $ArtifactDir
+            scope          = $StampScope
             # 网络兼容版本 = 引擎握手比对的 NetCL 的一部分（GeneralProjectSettings.ProjectVersion）。
             # 记下来是为了排查"旧包连不上"：两端这行不一致 = 引擎直接拒连，跟内容版本无关。
             # 空 = 没设置，引擎退回 1.0.0（两端都空就是一致的）。
@@ -2318,16 +2340,16 @@ foreach ($Run in $RunList) {
         }
 
         $VersionFileName = if ($Kind -eq 'Patch') { 'Version-Patch.json' } else { 'Version-Full.json' }
-        $VersionPath = Join-Path $OutDir $VersionFileName
+        $VersionPath = Join-Path $StampDir $VersionFileName
         $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
         [System.IO.File]::WriteAllText($VersionPath, (($VersionStamp | ConvertTo-Json -Depth 5) + "`r`n"), $Utf8NoBom)
 
-        # 指针：最后一次打包写的是哪一份。多平台并列时靠 platform 字段区分，
-        # 不会出现"读了 Latest 却拿到另一个平台的包"还浑然不知。
-        $LatestPath = Join-Path $OutDir 'Latest.json'
+        # 指针：这个 scope 最后一次打包写的是哪一份（同目录内，不跨平台）
+        $LatestPath = Join-Path $StampDir 'Latest.json'
         $Latest = [ordered]@{
             schemaVersion = 2
             kind          = 'Latest'
+            scope         = $StampScope
             latestFile    = $VersionFileName
             latestKind    = $Kind
             version       = $PlayerVersion

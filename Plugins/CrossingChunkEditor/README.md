@@ -327,7 +327,27 @@ FString UCrossingVersionLibrary::GetGameVersion()
 两端 `networkVersionEffective` 不一样 = 引擎在 connect 阶段直接拒连（不是提示）；
 `networkVersionSet: false` 表示没显式设置过、引擎退回 `1.0.0`。
 
-三份都放在归档根、**不在** `Windows` / `Android` 子目录里 —— 否则会被启动器的整目录枚举一起发布出去。
+三份**不放在归档根，也不进** `Windows` / `Android` 子目录（那里会被启动器整目录发布），
+而是按「平台-目标-配置-模式」各一套：
+
+```
+<归档根>\Version\
+├─ Win64-Client\                 Windows 客户端（Base / Patch 共用，Latest 指向最后一次）
+├─ Android-Client\               安卓客户端
+├─ Win64-Client-Development\     开发模式
+├─ Win64-Server-Quick\           服务器散件
+│     Version-Full.json
+│     Version-Patch.json
+│     Latest.json
+```
+
+Scope 就是报告目录名：`<Platform>-<Target>[-Development][-Quick]`。Windows / 安卓 / 服务器
+互不覆盖；`Base` 和 `Patch` 共用同一个 scope（`Latest.json` 指向最后一次写的那份），
+`Quick` 单独一个，不会把正式包的戳冲掉。打包时还会清掉归档根上旧布局的戳
+（`Version.json`、单份 `Version-Full/Patch.json`、`Latest.json`），避免读到没人维护的旧文件。
+
+`files[]` 的 `path` 仍然相对**归档根**（不是 scope 目录），下游直接拼 URL / 本地路径。
+
 `Latest.json` 是唯一入口：不搞「按固定名猜、找不到再换一个」那一套，指针缺失或指向的文件不存在都算不通过。
 
 ### 5.4 旧包自检（防「旧包拿新号」）

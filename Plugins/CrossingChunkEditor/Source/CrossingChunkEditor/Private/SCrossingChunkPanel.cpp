@@ -624,9 +624,9 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 						SNew(SButton)
 						.Text(LOCTEXT("CheckVersion", "版本自检"))
 						.ToolTipText(LOCTEXT("CheckVersionTip",
-							"核对产物目录里的版本戳（Latest.json 指向 Version-Full / Version-Patch）：\n"
-							"版本号对不对、是不是这次刚打的、补丁基线对不对、产物清单全不全。\n"
-							"生成碎片和上传之前点一下 —— 旧包/目录指错会当场红字拦下。"))
+							"核对当前目标的版本戳（<输出目录>\\Version\\<平台-目标-配置>\\ 下的 Latest.json）：\n"
+							"版本号、生成时间、补丁基线、产物清单全不全。\n"
+							"Windows / 安卓 / 服务器各一套，互不覆盖 —— 生成碎片和上传之前点一下。"))
 						.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
 						.OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnCheckVersionClicked))
 					]
@@ -2955,10 +2955,17 @@ FReply SCrossingChunkPanel::OnOpenArchiveDirClicked()
 FString SCrossingChunkPanel::BuildVersionCheckCommand() const
 {
 	const FString Script = FCrossingChunkRuleService::GetScriptPath(TEXT("Test-PackageVersion.ps1"));
+	const FString Platform = SelectedTarget.IsValid() ? SelectedTarget->Platform : TEXT("Win64");
+	const FString Target = SelectedTarget.IsValid() ? SelectedTarget->Target : TEXT("Client");
+	// 版本戳按 scope 分目录（和报告目录同一套规则），所以这四个参数必须和打包时一致：
+	// 服务器固定 Quick（见 BuildPackCommand），配置跟当前勾选。
+	const FString Mode = (Target == TEXT("Server"))
+		? FString(TEXT("Quick"))
+		: (SelectedMode.IsValid() ? SelectedMode->Value : FString(TEXT("Quick")));
 	// 内层引号要写成 \"（原因见 BuildExtraArgs）
 	return FString::Printf(
-		TEXT("& '%s' -ArchiveDir \\\"%s\\\" -ExpectedVersion \\\"%s\\\""),
-		*Script, *GetEffectiveArchiveDir(), *PlayerVersion);
+		TEXT("& '%s' -ArchiveDir \\\"%s\\\" -ExpectedVersion \\\"%s\\\" -Platform %s -Target %s -Configuration %s -Mode %s"),
+		*Script, *GetEffectiveArchiveDir(), *PlayerVersion, *Platform, *Target, *GetConfigurationValue(), *Mode);
 }
 
 FReply SCrossingChunkPanel::OnCheckVersionClicked()
