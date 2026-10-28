@@ -123,6 +123,24 @@ FString ChunkLabel(int32 ChunkId, const FString& ChunkName)
 		: FString::Printf(TEXT("Chunk %d · %s"), ChunkId, *ChunkName);
 }
 
+/**
+ * 写进 ini 之前先净化字段值。
+ *
+ * 名字 / 分类 / 注释都是人输入的，而规则行是 `Key="value"` 的裸拼串：
+ *   · 值里带一个 `"` 会提前闭合字段，下次 LoadRules 按 `Key="([^"]*)"` 只抓到引号前那截，
+ *     名字被截断、后半截裸在行里；
+ *   · 值里带换行会把一条规则拆成两行，整行解析不出来（还多出一行垃圾）。
+ * 所以统一把引号换成单引号、换行换成空格 —— 意思保住了，格式不会坏。
+ */
+FString SanitizeIniValue(const FString& Value)
+{
+	FString Out = Value;
+	Out.ReplaceInline(TEXT("\r"), TEXT(" "));
+	Out.ReplaceInline(TEXT("\n"), TEXT(" "));
+	Out.ReplaceInline(TEXT("\""), TEXT("'"));
+	return Out;
+}
+
 /** 按显示分类分组好的一组规则。 */
 struct FRuleCategoryGroup
 {
@@ -257,8 +275,8 @@ void AddGroupedRuleSubmenus(FMenuBuilder& InMenu, const TArray<FCrossingChunkRul
 		TArray<FCrossingChunkRule> SortedRules = Rules;
 		SortedRules.Sort([](const FCrossingChunkRule& A, const FCrossingChunkRule& B) { return A.ChunkId < B.ChunkId; });
 
-		// 构建菜单时就算好：Direct 指向局部 Rules 的元素，子菜单是点开时才构建的，
-		// 那时栈上的 Rules 早就没了 —— 在 lambda 里解引用它是悬垂指针（既有隐患，顺手修掉）。
+		// 构建菜单时就把值取出来：Direct 指向局部 Rules 的元素，子菜单是点开时才构建的，
+		// 那时栈上的 Rules 早就没了 —— 在 lambda 里按引用解引用它会成悬垂指针。
 		const int32 DirectChunkId = Direct ? Direct->ChunkId : INDEX_NONE;
 
 		MenuBuilder.AddSubMenu(
@@ -313,7 +331,7 @@ void AddGroupedRuleSubmenus(FMenuBuilder& InMenu, const TArray<FCrossingChunkRul
 					FString Message;
 					Notify(Message, FCrossingChunkRuleService::RemoveAssignment(Folder, Message));
 				}),
-				FCanExecuteAction::CreateLambda([Direct] { return Direct != nullptr; })));
+				FCanExecuteAction::CreateLambda([bHasDirect = (Direct != nullptr)] { return bHasDirect; })));
 
 		MenuBuilder.EndSection();
 	}
@@ -575,6 +593,48 @@ FString FCrossingChunkRuleService::GetFolderLeafName(const FString& FolderPath)
 	return Leaf.IsEmpty() ? TEXT("新分块") : Leaf;
 }
 
+bool FCrossingChunkRuleService::CreateDefaultRuleFile(FString& OutError)
+{
+	const FString Path = GetRuleIniPath();
+	if (FPaths::FileExists(Path))
+	{
+		return true;
+	}
+
+	const FString Dir = FPaths::GetPath(Path);
+	if (!Dir.IsEmpty() && !FPaths::DirectoryExists(Dir))
+	{
+		if (!IFileManager::Get().MakeDirectory(*Dir, /*Tree=*/true))
+		{
+			OutError = FString::Printf(TEXT("建不了目录 %s"), *Dir);
+			return false;
+		}
+	}
+
+	// 只写「说明 + 段头 + GlobalExcludeFolders」：
+	//   · 空规则集是合法状态，打包脚本会把它当成「全部未分类」→ 兜底进 chunk 0；
+	//   · 有段头，面板和右键菜单才能开始工作；
+	//   · +GlobalExcludeFolders= 放在段里，SaveRules 插入新规则时会自然落到它上面。
+	TArray<FString> Lines;
+	Lines.Add(TEXT("; ============================================================"));
+	Lines.Add(TEXT("; CrossingChunk 分包规则"));
+	Lines.Add(TEXT(";"));
+	Lines.Add(TEXT("; 由《二游打包》页 / 内容浏览器右键维护，打包脚本读的是同一份文件。"));
+	Lines.Add(TEXT("; 这个空规则集是插件第一次打开时自动生成的："));
+	Lines.Add(TEXT("; 右键文件夹「指定为 Chunk」即可开始分配。"));
+	Lines.Add(TEXT("; ============================================================"));
+	Lines.Add(FString::Printf(TEXT("[%s]"), *GetRuleSection()));
+	Lines.Add(TEXT("+GlobalExcludeFolders="));
+
+	if (!SaveUtf8Lines(Path, Lines, OutError))
+	{
+		return false;
+	}
+
+	UE_LOG(LogTemp, Display, TEXT("CrossingChunkEditor: 已生成默认规则文件 %s"), *Path);
+	return true;
+}
+
 bool FCrossingChunkRuleService::LoadRules(TArray<FCrossingChunkRule>& OutRules, FString& OutError)
 {
 	OutRules.Reset();
@@ -582,8 +642,12 @@ bool FCrossingChunkRuleService::LoadRules(TArray<FCrossingChunkRule>& OutRules, 
 	const FString Path = GetRuleIniPath();
 	if (!FPaths::FileExists(Path))
 	{
-		OutError = FString::Printf(TEXT("找不到 %s"), *Path);
-		return false;
+		// 新工程第一次用：先把规则文件（带段头的空规则集）落下来，
+		// 否则面板和右键菜单都只能报「找不到」，连新建 Chunk 的入口都没有。
+		if (!CreateDefaultRuleFile(OutError))
+		{
+			return false;
+		}
 	}
 
 	TArray<FString> Lines;
@@ -724,19 +788,29 @@ FString FCrossingChunkRuleService::MakeRuleLine(const FCrossingChunkRule& Rule)
 		Folders += FString::Printf(TEXT("(Path=\"%s\")"), *Rule.Folders[Index]);
 	}
 
+	// 先落局部变量再拼：直接写 *SanitizeIniValue(...) 是拿临时对象的指针，
+	// 和「平台设置那行 Printf」是同一类坑，别图省事。
+	const FString SafeName = SanitizeIniValue(Rule.ChunkName);
+	const FString SafeCategory = SanitizeIniValue(Rule.Category);
+	const FString SafeComment = SanitizeIniValue(Rule.Comment);
+
 	return FString::Printf(
 		TEXT("+Chunks=(ChunkName=\"%s\",Category=\"%s\",ChunkId=%d,Folders=(%s),Priority=0,bIncludeInInstallPackage=%s,ForceExcludeFolders=,Comment=\"%s\")"),
-		*Rule.ChunkName,
-		*Rule.Category,
+		*SafeName,
+		*SafeCategory,
 		Rule.ChunkId,
 		*Folders,
 		Rule.bIncludeInInstallPackage ? TEXT("True") : TEXT("False"),
-		*Rule.Comment);
+		*SafeComment);
 }
 
 bool FCrossingChunkRuleService::SaveRules(const TArray<FCrossingChunkRule>& Rules, FString& OutError)
 {
 	const FString Path = GetRuleIniPath();
+	if (!FPaths::FileExists(Path) && !CreateDefaultRuleFile(OutError))
+	{
+		return false;
+	}
 
 	TArray<FString> Lines;
 	if (!LoadUtf8Lines(Path, Lines, OutError))
@@ -1163,8 +1237,7 @@ void FCrossingChunkEditorModule::StartupModule()
 void FCrossingChunkEditorModule::RegisterMainMenu()
 {
 	// 用 UToolMenus 扩展「平台」菜单。
-	// 菜单名是 LevelEditor.MainMenu.Platforms（带 s），扩展点靠这个字符串绑定 ——
-	// 这条是照着被停用的旧插件（_CrossingChunk.disabled）里的写法搬过来的，那条写法验证过能出现。
+	// 菜单名是 LevelEditor.MainMenu.Platforms（带 s），扩展点靠这个字符串绑定。
 	MainMenuStartupHandle = UToolMenus::RegisterStartupCallback(
 		FSimpleMulticastDelegate::FDelegate::CreateLambda([]()
 		{
