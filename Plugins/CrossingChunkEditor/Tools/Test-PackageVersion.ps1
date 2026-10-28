@@ -171,7 +171,16 @@ if ([string]::IsNullOrWhiteSpace([string]$Latest.latestFile)) {
     exit 1
 }
 
-$StampPath = Join-Path $StampDir ([string]$Latest.latestFile)
+$StampPath = Join-Path $ArchiveDir ([string]$Latest.latestFile)
+# 指针是相对归档根的路径；必须落在当前 scope 目录里，防止被指到别的平台
+$StampFull = [IO.Path]::GetFullPath($StampPath)
+$StampDirFull = [IO.Path]::GetFullPath($StampDir)
+if (-not $StampFull.StartsWith($StampDirFull, [StringComparison]::OrdinalIgnoreCase)) {
+    Bad ("Latest.json 指向的 {0} 不在 {1} 里 —— 指针跨平台了？" -f $Latest.latestFile, $StampScope)
+    Write-Host ''
+    Write-Host '自检不通过' -ForegroundColor Red
+    exit 1
+}
 if (-not (Test-Path -LiteralPath $StampPath)) {
     Bad ("Latest.json 指向的 {0} 不存在 —— 指针过期，目录不完整" -f $Latest.latestFile)
     Write-Host ''
@@ -359,7 +368,7 @@ else {
         }
 
         $Item = Get-Item -LiteralPath $Full
-        if ($null -ne $f.size -and $Item.Length -ne [int64]$f.size) {
+        if ($null -ne $f.sizeBytes -and $Item.Length -ne [int64]$f.sizeBytes) {
             $SizeBad += $Rel
         }
 

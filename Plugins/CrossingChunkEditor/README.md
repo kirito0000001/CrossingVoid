@@ -309,12 +309,20 @@ FString UCrossingVersionLibrary::GetGameVersion()
 | `Version-Patch.json` | `Patch` | 补丁：`kind=Patch`，另有 `baseVersion` = 基于哪条线上基线 |
 | `Latest.json` | 每次都写 | 指针：`latestFile` 指向上面哪一份、`generatedAt`、`pluginVersion` |
 
-`files[]` 每一项统一是 **posix 相对路径 + `sha256`**，下游（碎片生成 / 发布清单）直接拿去用：
+`files[]` 每一项统一是 posix 相对路径 + `sizeBytes` + `sha256`，下游（碎片生成 / 发布清单）直接拿去用：
 
 ```json
-{ "path": "Android/xxx.apk", "size": 75984616,
+{ "path": "Android/xxx.apk", "sizeBytes": 75984616,
   "sha256": "40962c3f...", "modified": "2026-10-27T12:33:01" }
 ```
+
+**范围按包型分**：
+
+- **版本包（`Base`）**：发布目录**全量**（排除 `*.pdb`、`*_Symbols_*`、安卓的 `win-x64`），
+  首次安装 / 大版本更新能逐文件体检；
+- **补丁（`Patch`）/ 快速验证**：只列**这次产出的关键产物**（`.exe/.pak/.utoc/.ucas/.apk/.obb`）——
+  补丁本来就只带变化块，列全量没意义；
+- **服务器**：散件走 git、固定 `Quick`，只列 exe。
 
 三个字段是重点：
 

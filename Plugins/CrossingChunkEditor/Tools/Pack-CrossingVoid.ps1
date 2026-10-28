@@ -2264,8 +2264,12 @@ foreach ($Run in $RunList) {
         if ($Configuration -eq 'Development') { $StampScope += '-Development' }
         if ($Mode -eq 'Quick') { $StampScope += '-Quick' }
         $StampDir = Join-Path $OutDir "Version\$StampScope"
+        Write-Host ''
+        Write-Host ("[版本戳] scope = {0}" -f $StampScope) -ForegroundColor Cyan
+        Write-Host ("         目录 = {0}" -f $StampDir) -ForegroundColor DarkGray
         if (-not (Test-Path -LiteralPath $StampDir)) {
             New-Item -ItemType Directory -Path $StampDir -Force | Out-Null
+            Write-Host '         目录不存在，已新建' -ForegroundColor DarkGray
         }
 
         # 根目录上属于旧布局的戳（含 2026-10-28 之前的 Version.json）一律清掉，
@@ -2274,6 +2278,7 @@ foreach ($Run in $RunList) {
             $OldPath = Join-Path $OutDir $OldName
             if (Test-Path -LiteralPath $OldPath) {
                 Remove-Item -LiteralPath $OldPath -Force -ErrorAction SilentlyContinue
+                Write-Host ("         清理旧布局的根目录戳：{0}" -f $OldName) -ForegroundColor Yellow
             }
         }
 
@@ -2292,32 +2297,70 @@ foreach ($Run in $RunList) {
             catch { }
         }
 
-        # 产物清单：posix 相对路径（相对归档根）+ 大小 + sha256。
+        # 产物清单：posix 相对路径（相对归档根）+ sizeBytes + sha256。
         # sha256 在这里算一次，下游（碎片生成 / 发布清单）直接拿去用，不用再扫一遍。
-        # 只记这次打包真正产出的：可执行文件 + 容器（含常规补丁的 *_P.pak/.utoc/.ucas）。
-        # 安卓的发布文件都在顶层（apk/obb）：递归会把打包工具 win-x64\UnrealAndroidFileTool.exe
-        # 也收进清单（发布那边可能照着上传），所以安卓只扫一层。Windows/服务器要递归（pak/exe 在子目录）。
+        #
+        # 范围按包型分：
+        #   · 版本包（Base）：发布目录【全量】—— 首次安装 / 大版本更新要能逐文件体检。
+        #   · 补丁 / 快速验证：只记这次打包产出的关键产物（容器 + 可执行）。
+        #     补丁本来就只带变化块，列全量没意义，还白花哈希时间。
+        # 全量时排除符号（*.pdb、*_Symbols_*）和安卓的打包工具目录 win-x64
+        # —— 它们不是发布内容，列进去会让体检误报。
+        # 服务器是散件走 git、Mode 固定 Quick，落到"关键产物"分支，只记 exe。
+        $bFullManifest = ($Kind -eq 'Full' -and $Mode -eq 'Base')
         $VersionStampFiles = @()
         if (Test-Path -LiteralPath $ArtifactPath) {
-            $StampItems = if ($Platform -eq 'Android') {
-                Get-ChildItem -LiteralPath $ArtifactPath -File -ErrorAction SilentlyContinue
+            if ($bFullManifest) {
+                $StampItems = @(Get-ChildItem -LiteralPath $ArtifactPath -Recurse -File -ErrorAction SilentlyContinue |
+                    Where-Object {
+                        if ($_.Extension -ieq '.pdb') { return $false }
+                        $Rel = $_.FullName.Substring($ArtifactPath.Length).TrimStart('\', '/')
+                        if ($Rel -like 'win-x64\*') { return $false }
+                        if ($Rel -like '*_Symbols_*\*') { return $false }
+                        return $true
+                    })
             }
             else {
-                Get-ChildItem -LiteralPath $ArtifactPath -Recurse -File -ErrorAction SilentlyContinue
-            }
-            $VersionStampFiles = @($StampItems |
-                Where-Object {
+                # 安卓的发布文件都在顶层（apk/obb）：递归会把打包工具 win-x64\UnrealAndroidFileTool.exe
+                # 也收进清单（发布那边可能照着上传），所以安卓只扫一层。Windows/服务器要递归（pak/exe 在子目录）。
+                $StampItems = if ($Platform -eq 'Android') {
+                    Get-ChildItem -LiteralPath $ArtifactPath -File -ErrorAction SilentlyContinue
+                }
+                else {
+                    Get-ChildItem -LiteralPath $ArtifactPath -Recurse -File -ErrorAction SilentlyContinue
+                }
+                $StampItems = @($StampItems | Where-Object {
                     ($_.Extension -in '.apk', '.obb', '.exe', '.pak', '.utoc', '.ucas') -and ($_.LastWriteTime -ge $StartTime)
-                } |
-                Sort-Object FullName |
-                ForEach-Object {
-                    [pscustomobject]@{
-                        path     = $_.FullName.Substring($OutDir.Length).TrimStart('\', '/').Replace('\', '/')
-                        size     = $_.Length
-                        sha256   = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-                        modified = $_.LastWriteTime.ToString('yyyy-MM-ddTHH:mm:ss')
-                    }
                 })
+            }
+
+            $StampItems = @($StampItems | Sort-Object FullName)
+            $StampTotal = $StampItems.Count
+            [double]$StampTotalBytes = 0
+            foreach ($StampItem in $StampItems) { $StampTotalBytes += $StampItem.Length }
+
+            Write-Host ''
+            Write-Host ("[版本戳] 清单范围：{0}" -f $(if ($bFullManifest) { '整包全量（发布目录里所有会被上传的文件）' } else { '本次关键产物（容器 + 可执行）' })) -ForegroundColor Cyan
+            Write-Host ("         目录：{0}" -f $ArtifactPath) -ForegroundColor DarkGray
+            Write-Host ("         共 {0} 个文件、{1:N2} GB；逐个算 sha256（只读磁盘，不改产物）" -f $StampTotal, ($StampTotalBytes / 1GB)) -ForegroundColor Cyan
+
+            $HashStart = Get-Date
+            $StampIndex = 0
+            $VersionStampFiles = @($StampItems | ForEach-Object {
+                $StampIndex++
+                $Rel = $_.FullName.Substring($OutDir.Length).TrimStart('\', '/').Replace('\', '/')
+                Write-Host ("         [{0}/{1}] {2}（{3:N1} MB）" -f $StampIndex, $StampTotal, $Rel, ($_.Length / 1MB)) -ForegroundColor DarkGray
+                [pscustomobject]@{
+                    path      = $Rel
+                    sizeBytes = $_.Length
+                    sha256    = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                    modified  = $_.LastWriteTime.ToString('yyyy-MM-ddTHH:mm:ss')
+                }
+            })
+            Write-Host ("         sha256 完成，用时 {0:N1} 秒" -f ((Get-Date) - $HashStart).TotalSeconds) -ForegroundColor DarkGray
+        }
+        else {
+            Write-Host "[版本戳] 产物目录不存在，清单留空：$ArtifactPath" -ForegroundColor Yellow
         }
 
         $VersionStamp = [ordered]@{
@@ -2352,13 +2395,15 @@ foreach ($Run in $RunList) {
         $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
         [System.IO.File]::WriteAllText($VersionPath, (($VersionStamp | ConvertTo-Json -Depth 5) + "`r`n"), $Utf8NoBom)
 
-        # 指针：这个 scope 最后一次打包写的是哪一份（同目录内，不跨平台）
+        # 指针：这个 scope 最后一次打包写的是哪一份。
+        # latestFile 用【相对归档根】的 posix 路径（如 Version/Win64-Client/Version-Patch.json）：
+        # 自带位置信息，调用方拿到指针就能直接定位，不用再知道 Latest 自己在哪一层。
         $LatestPath = Join-Path $StampDir 'Latest.json'
         $Latest = [ordered]@{
             schemaVersion = 2
             kind          = 'Latest'
             scope         = $StampScope
-            latestFile    = $VersionFileName
+            latestFile    = "Version/$StampScope/$VersionFileName"
             latestKind    = $Kind
             version       = $PlayerVersion
             baseVersion   = $(if ($Kind -eq 'Patch') { $ReleaseVersion } else { '' })
@@ -2371,9 +2416,10 @@ foreach ($Run in $RunList) {
         [System.IO.File]::WriteAllText($LatestPath, (($Latest | ConvertTo-Json -Depth 4) + "`r`n"), $Utf8NoBom)
 
         Write-Host ''
-        Write-Host ("[版本戳] {0} · {1} · {2} · {3} 个产物文件" -f $(if ($PlayerVersion) { $PlayerVersion } else { '(未填版本)' }), $Kind, $ArtifactDir, $VersionStampFiles.Count) -ForegroundColor Green
-        Write-Host "         $VersionPath" -ForegroundColor DarkGray
-        Write-Host "         $LatestPath" -ForegroundColor DarkGray
+        Write-Host ("[版本戳] 已写入 {0}" -f $(if ($PlayerVersion) { $PlayerVersion } else { '(未填版本)' })) -ForegroundColor Green
+        Write-Host ("         kind={0} · baseVersion={1} · mode={2} · {3} 个文件" -f $Kind, $(if ($Kind -eq 'Patch') { $ReleaseVersion } else { '—' }), $Mode, $VersionStampFiles.Count) -ForegroundColor Green
+        Write-Host ("         清单：{0}" -f $VersionPath) -ForegroundColor DarkGray
+        Write-Host ("         指针：{0} -> {1}" -f $LatestPath, $Latest.latestFile) -ForegroundColor DarkGray
 
         # ---- PC 客户端：自检运行库安装器有没有被 stage 进来 ----
         # 这两份不是我们手工拷的，靠官方开关：
