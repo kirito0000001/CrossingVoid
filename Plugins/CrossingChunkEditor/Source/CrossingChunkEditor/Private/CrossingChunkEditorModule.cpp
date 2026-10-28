@@ -437,22 +437,17 @@ void AddGroupedRuleSubmenus(FMenuBuilder& InMenu, const TArray<FCrossingChunkRul
 			LOCTEXT("AssignSubmenuBulkTip", "把选中的这批目录（含子目录）都划给某个分块。"),
 			FNewMenuDelegate::CreateLambda([Folders, SortedRules, NextId, NewChunkName](FMenuBuilder& SubMenu)
 			{
-				/** 对整组目录逐个执行同一个 Assign，汇总成一条通知。 */
+				/** 整组目录一次落盘（AssignMany），汇总成一条通知。 */
 				auto AssignAll = [Folders](int32 ChunkId, const FString& ChunkName)
 				{
-					int32 OkCount = 0;
-					for (const FString& Folder : Folders)
-					{
-						FString Message;
-						if (FCrossingChunkRuleService::Assign(Folder, ChunkId, ChunkName, Message))
-						{
-							++OkCount;
-						}
-					}
-					FString Message = FString::Printf(
-						TEXT("已把 %d/%d 个目录划给 %s"),
-						OkCount, Folders.Num(), *ChunkLabel(ChunkId, ChunkName));
-					Notify(Message, OkCount == Folders.Num());
+					int32 Assigned = 0;
+					FString Message;
+					const bool bOk = FCrossingChunkRuleService::AssignMany(Folders, ChunkId, ChunkName, Assigned, Message);
+					Notify(
+						bOk ? FString::Printf(TEXT("已把 %d/%d 个目录划给 %s"),
+							Assigned, Folders.Num(), *ChunkLabel(ChunkId, ChunkName))
+							: FString::Printf(TEXT("指派失败：%s"), *Message),
+						bOk);
 				};
 
 				// 有分类 → 分类二级子菜单；没有 → 平铺（现状）。批量条目是普通项（无 RadioButton）
@@ -927,6 +922,97 @@ bool FCrossingChunkRuleService::Assign(const FString& Folder, int32 ChunkId, con
 	OutMessage = FString::Printf(
 		TEXT("已把 %s 划给 %s%s（下次打包自动生效）"),
 		*Path, *ChunkLabel(ChunkId, TargetName), *Extra);
+	return true;
+}
+
+bool FCrossingChunkRuleService::AssignMany(const TArray<FString>& Folders, int32 ChunkId, const FString& ChunkName,
+	int32& OutAssignedCount, FString& OutMessage)
+{
+	OutAssignedCount = 0;
+
+	if (ChunkId < 0)
+	{
+		OutMessage = TEXT("Chunk 号不能是负数。");
+		return false;
+	}
+
+	// 归一化 + 去重：调用方给的目录可能带尾斜杠或反斜杠，也可能重了
+	TArray<FString> Paths;
+	for (const FString& Folder : Folders)
+	{
+		const FString Path = NormalizeFolderPath(Folder);
+		if (!Path.IsEmpty()) { Paths.AddUnique(Path); }
+	}
+	if (Paths.Num() == 0)
+	{
+		OutMessage = TEXT("没有可指派的目录。");
+		return false;
+	}
+
+	TArray<FCrossingChunkRule> Rules;
+	FString Error;
+	if (!LoadRules(Rules, Error))
+	{
+		OutMessage = FString::Printf(TEXT("规则读取失败：%s"), *Error);
+		return false;
+	}
+
+	// 先从别的分块里摘掉（和单个 Assign 同一套语义），顺手记下被清空的分块号
+	TArray<int32> EmptiedChunks;
+	for (FCrossingChunkRule& Rule : Rules)
+	{
+		for (const FString& Path : Paths)
+		{
+			if (Rule.Folders.Remove(Path) > 0 && Rule.Folders.Num() == 0)
+			{
+				EmptiedChunks.AddUnique(Rule.ChunkId);
+			}
+		}
+	}
+	Rules.RemoveAll([](const FCrossingChunkRule& Rule) { return Rule.Folders.Num() == 0; });
+
+	FCrossingChunkRule* Target = Rules.FindByPredicate([ChunkId](const FCrossingChunkRule& Rule) { return Rule.ChunkId == ChunkId; });
+	if (!Target)
+	{
+		FCrossingChunkRule NewRule;
+		NewRule.ChunkId = ChunkId;
+		NewRule.ChunkName = ChunkName.IsEmpty() ? FString::Printf(TEXT("Chunk %d"), ChunkId) : ChunkName;
+		NewRule.bIncludeInInstallPackage = (ChunkId == 0);
+		Rules.Add(MoveTemp(NewRule));
+		Target = &Rules.Last();
+	}
+
+	// 注意：拿到 Target 之后只动它的 Folders，不能再往 Rules 里加元素（数组会重新分配）
+	for (const FString& Path : Paths)
+	{
+		Target->Folders.AddUnique(Path);
+	}
+	Target->Folders.Sort();
+
+	const FString TargetName = Target->ChunkName;
+	Rules.Sort([](const FCrossingChunkRule& A, const FCrossingChunkRule& B) { return A.ChunkId < B.ChunkId; });
+
+	if (!SaveRules(Rules, Error))
+	{
+		OutMessage = FString::Printf(TEXT("写入失败：%s"), *Error);
+		return false;
+	}
+
+	FString Extra;
+	if (EmptiedChunks.Num() > 0)
+	{
+		TArray<FString> Parts;
+		for (const int32 Id : EmptiedChunks)
+		{
+			Parts.Add(FString::Printf(TEXT("%d"), Id));
+		}
+		Extra = FString::Printf(TEXT("；Chunk %s 已没有目录，规则已删除"), *FString::Join(Parts, TEXT("/")));
+	}
+
+	OutAssignedCount = Paths.Num();
+	OutMessage = FString::Printf(
+		TEXT("已把 %d 个目录划给 %s%s（下次打包自动生效）"),
+		Paths.Num(), *ChunkLabel(ChunkId, TargetName), *Extra);
 	return true;
 }
 

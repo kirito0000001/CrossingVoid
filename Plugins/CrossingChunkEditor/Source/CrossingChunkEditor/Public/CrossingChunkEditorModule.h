@@ -18,6 +18,7 @@ struct FCrossingChunkRule
 	int32   ChunkId = INDEX_NONE;
 	TArray<FString> Folders;          // 形如 /Game/GameActor2D/SAO_Kirito
 	FString Comment;
+	/** 保留字段：打包脚本目前不读它；新建规则时只有 0 号包默认 true。 */
 	bool    bIncludeInInstallPackage = false;
 };
 
@@ -79,6 +80,15 @@ public:
 	static bool Assign(const FString& Folder, int32 ChunkId, const FString& ChunkName, FString& OutMessage);
 
 	/**
+	 * 一次读写把一整批目录划给同一个 Chunk（内容浏览器里跨目录多选时用）。
+	 * 语义和逐个调 Assign 完全一致（从别的分块摘掉、空了就删规则），
+	 * 但只落盘一次 —— 批量选 20 个目录时不会写 20 遍 ini，也不会留下"改了一半"的规则集。
+	 * OutAssignedCount 是实际划过去的目录数（已归一化去重）。
+	 */
+	static bool AssignMany(const TArray<FString>& Folders, int32 ChunkId, const FString& ChunkName,
+		int32& OutAssignedCount, FString& OutMessage);
+
+	/**
 	 * 一次性新建一条规则，把一整批目录划给一个新 Chunk，返回新号。
 	 * 新号 = max(NextChunkId, MinChunkId)：MinChunkId 用来避开"上一次打包的兜底块号"——
 	 * 那个号没写进规则（脚本每次现算），但**已经随包发给玩家了**，
@@ -118,6 +128,12 @@ public:
 	static FString MakeRuleLine(const FCrossingChunkRule& Rule);
 
 private:
+	/**
+	 * 规则文件不存在时写一份空规则集：只带说明、段头和 `+GlobalExcludeFolders=`。
+	 * 空规则集是合法状态（全部内容按脚本兜底进 chunk 0），建完就能右键分配。
+	 */
+	static bool CreateDefaultRuleFile(FString& OutError);
+
 	/** 整份写回：保留文件里其它段和注释，只替换 +Chunks= 那些行。 */
 	static bool SaveRules(const TArray<FCrossingChunkRule>& Rules, FString& OutError);
 };
