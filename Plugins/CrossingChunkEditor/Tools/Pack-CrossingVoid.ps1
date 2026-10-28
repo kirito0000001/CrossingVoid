@@ -2295,9 +2295,17 @@ foreach ($Run in $RunList) {
         # 产物清单：posix 相对路径（相对归档根）+ 大小 + sha256。
         # sha256 在这里算一次，下游（碎片生成 / 发布清单）直接拿去用，不用再扫一遍。
         # 只记这次打包真正产出的：可执行文件 + 容器（含常规补丁的 *_P.pak/.utoc/.ucas）。
+        # 安卓的发布文件都在顶层（apk/obb）：递归会把打包工具 win-x64\UnrealAndroidFileTool.exe
+        # 也收进清单（发布那边可能照着上传），所以安卓只扫一层。Windows/服务器要递归（pak/exe 在子目录）。
         $VersionStampFiles = @()
         if (Test-Path -LiteralPath $ArtifactPath) {
-            $VersionStampFiles = @(Get-ChildItem -LiteralPath $ArtifactPath -Recurse -File -ErrorAction SilentlyContinue |
+            $StampItems = if ($Platform -eq 'Android') {
+                Get-ChildItem -LiteralPath $ArtifactPath -File -ErrorAction SilentlyContinue
+            }
+            else {
+                Get-ChildItem -LiteralPath $ArtifactPath -Recurse -File -ErrorAction SilentlyContinue
+            }
+            $VersionStampFiles = @($StampItems |
                 Where-Object {
                     ($_.Extension -in '.apk', '.obb', '.exe', '.pak', '.utoc', '.ucas') -and ($_.LastWriteTime -ge $StartTime)
                 } |
