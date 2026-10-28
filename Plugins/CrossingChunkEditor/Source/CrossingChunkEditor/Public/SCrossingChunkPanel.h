@@ -107,7 +107,8 @@ private:
 	/** 打开当前产物目录 —— 生成碎片/上传的源目录就是它，省得手输指到旧路径上。 */
 	FReply OnOpenArchiveDirClicked();
 	/**
-	 * 版本自检：跑 Tools\Test-PackageVersion.ps1，核对产物目录里的 Version.json（版本/时间/模式）。
+	 * 版本自检：跑 Tools\Test-PackageVersion.ps1，核对产物目录里的版本戳
+	 * （Latest.json 指向 Version-Full / Version-Patch）——版本 / 生成时间 / 补丁基线 / 产物清单。
 	 * 拿错目录、版本对不上、包太旧都会被拦下 —— 2026-10-26 那次「旧包拿新号」就是这么发生的。
 	 */
 	FReply OnCheckVersionClicked();

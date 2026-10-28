@@ -624,7 +624,8 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 						SNew(SButton)
 						.Text(LOCTEXT("CheckVersion", "版本自检"))
 						.ToolTipText(LOCTEXT("CheckVersionTip",
-							"核对产物目录里的 Version.json：版本号对不对、是不是这次刚打的、能不能发布。\n"
+							"核对产物目录里的版本戳（Latest.json 指向 Version-Full / Version-Patch）：\n"
+							"版本号对不对、是不是这次刚打的、补丁基线对不对、产物清单全不全。\n"
 							"生成碎片和上传之前点一下 —— 旧包/目录指错会当场红字拦下。"))
 						.IsEnabled_Lambda([this]() { return AreInputsEnabled(); })
 						.OnClicked(FOnClicked::CreateSP(this, &SCrossingChunkPanel::OnCheckVersionClicked))
