@@ -75,8 +75,14 @@ public:
 	void Construct(const FArguments& InArgs);
 	~SCrossingChunkPanel();
 
-	/** 重新读规则文件，重建列表。 */
-	void RefreshRules();
+	/**
+	 * 重新读规则文件，重建列表。
+	 * bClearStatusMessage：顺手清掉顶部那行状态消息。
+	 * 默认**不清** —— 「指派到」「改分类」都是先写消息、再把重建推迟到下一帧，
+	 * 这里要是无条件清空，用户刚做完操作就看不到结果了（打包完成的提示同理）。
+	 * 只有「用户主动刷新 / 换目标 / 换模式」这种"上下文已经变了"的场合才传 true。
+	 */
+	void RefreshRules(bool bClearStatusMessage = false);
 
 private:
 	TSharedRef<SWidget> MakeChunkRow(TSharedPtr<FCrossingChunkRule> Rule);

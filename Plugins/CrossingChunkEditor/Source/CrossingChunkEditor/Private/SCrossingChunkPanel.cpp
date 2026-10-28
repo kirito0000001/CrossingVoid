@@ -233,7 +233,7 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 						ApplyMapsCsvToChoices();
 						RebuildMapList();
 
-						RefreshRules();   // 换目标 = 换一份报告，列表要跟着变
+						RefreshRules(/*bClearStatusMessage=*/true);   // 换目标 = 换一份报告，列表要跟着变
 						RefreshStatus();  // 状态行也是按目标的（报告/产物/基线各一份）
 						SaveSettings();
 					}
@@ -271,7 +271,7 @@ void SCrossingChunkPanel::Construct(const FArguments& InArgs)
 						{
 							if (TSharedPtr<SWidget> Pinned = WeakSelf.Pin())
 							{
-								StaticCastSharedPtr<SCrossingChunkPanel>(Pinned)->RefreshRules();
+								StaticCastSharedPtr<SCrossingChunkPanel>(Pinned)->RefreshRules(/*bClearStatusMessage=*/true);
 							}
 							return false;
 						}), 0.f);
@@ -888,7 +888,7 @@ static bool IsPatchChunkName(const FString& ChunkName)
 	return ChunkName.StartsWith(GPatchChunkNamePrefix, ESearchCase::CaseSensitive);
 }
 
-void SCrossingChunkPanel::RefreshRules()
+void SCrossingChunkPanel::RefreshRules(bool bClearStatusMessage)
 {
 	// 重建列表会销毁旧行上的控件。如果有没关干净的孤儿弹层（下拉菜单/弹出输入框
 	// 还悬在半空，宿主却没了），它会一直挡在那儿吃掉点击——表现为某行的下拉
@@ -902,7 +902,10 @@ void SCrossingChunkPanel::RefreshRules()
 	Unclassified.Reset();
 	ReportChunks.Reset();
 	FolderTotal = 0;
-	StatusMessage.Empty();
+	if (bClearStatusMessage)
+	{
+		StatusMessage.Empty();
+	}
 
 	if (RowsBox.IsValid()) { RowsBox->ClearChildren(); }
 	if (UnclassBox.IsValid()) { UnclassBox->ClearChildren(); }
@@ -2009,7 +2012,7 @@ FReply SCrossingChunkPanel::OnLocateClicked(FString Folder)
 
 FReply SCrossingChunkPanel::OnRefreshClicked()
 {
-	RefreshRules();
+	RefreshRules(/*bClearStatusMessage=*/true);
 	RefreshStatus();
 	return FReply::Handled();
 }
@@ -2175,7 +2178,7 @@ void SCrossingChunkPanel::SetDevelopmentBuild(bool bEnable)
 	ReleaseRoot = DeriveReleaseRoot(GetEffectiveArchiveDir());
 
 	SaveSettings();
-	RefreshRules();    // 变化列读的是「对应配置那一份」报告（目录名带 -Development），要重读
+	RefreshRules(/*bClearStatusMessage=*/true);    // 变化列读的是「对应配置那一份」报告（目录名带 -Development），要重读
 	RefreshStatus();   // 报告 / 产物 / 基线三格也都按配置分开
 }
 
@@ -2636,7 +2639,7 @@ FReply SCrossingChunkPanel::OnPackClicked()
 				if (Batch.IsValid()) { Labels.Add(Batch->Label); }
 			}
 
-			RefreshRules();   // 右栏立刻切到「待正式划分」那份清单（它会清 StatusMessage，所以顺序在后）
+			RefreshRules();   // 右栏立刻切到「待正式划分」那份清单
 			StatusMessage = TEXT("《版本更新》前要先把补丁批次正式划分掉 —— 打包没有启动");
 
 			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(FString::Printf(
