@@ -1669,6 +1669,9 @@ bool SCrossingChunkPanel::RegisterPatchBatch(FString& OutMessage)
 	{
 		if (Pair.Value.bIsUnclassified) { MinNewId = FMath::Max(MinNewId, Pair.Key + 1); }
 	}
+	// 面板手上只有「当前目标 × 当前配置 × 当前模式」那一份报告；上次打包可能是别的目标
+	// （比如昨天打了安卓、今天打 Windows）。再问一遍所有报告，免得报销号。
+	MinNewId = FMath::Max(MinNewId, FCrossingChunkRuleService::GetLastUnclassifiedChunkId() + 1);
 
 	return FCrossingChunkRuleService::AddChunk(
 		FString::Printf(TEXT("版本补丁%d"), NextNumber), UncoveredFolders, NewChunkId, OutMessage, MinNewId);

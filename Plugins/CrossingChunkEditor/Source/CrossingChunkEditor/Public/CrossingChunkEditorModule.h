@@ -73,8 +73,22 @@ public:
 
 	static const FCrossingChunkRule* FindRuleById(const TArray<FCrossingChunkRule>& Rules, int32 ChunkId);
 
-	/** 下一个没被占用的 ChunkId。 */
-	static int32 NextChunkId(const TArray<FCrossingChunkRule>& Rules);
+	/**
+	 * 下一个没被占用的 ChunkId。
+	 * MinChunkId 是下限（含）：用来避开「上一次打包的兜底块号」—— 那个号没写进规则，
+	 * 但已经随包发出去过，复用它会让同一个号在新包里装另一批内容。
+	 */
+	static int32 NextChunkId(const TArray<FCrossingChunkRule>& Rules, int32 MinChunkId = 0);
+
+	/**
+	 * 上一次打包时脚本兜底块用过的最大号（读 Saved\PackLogs\ChunkReports\*\latest.json
+	 * 里 kind="unclassified" 的那些项）。从没打过包 / 报告读不出来时返回 INDEX_NONE。
+	 *
+	 * 为什么要单独查：规则里没有兜底块的号（脚本每次按 max(ChunkId)+1 现算），
+	 * 而「新建 Chunk」算出来的号恰好就是同一个号 —— 不查报告的话，新建就等于复用
+	 * 一个已经发给玩家的块。扫码报告比去解析 cook 日志可靠：报告就是脚本自己写的。
+	 */
+	static int32 GetLastUnclassifiedChunkId();
 
 	/** 把目录划给某个 Chunk；ChunkId 不存在就新建一条规则（名字用 ChunkName）。 */
 	static bool Assign(const FString& Folder, int32 ChunkId, const FString& ChunkName, FString& OutMessage);

@@ -3,6 +3,8 @@
 #include "AssetRegistry/AssetData.h"
 #include "ContentBrowserDelegates.h"
 #include "ContentBrowserModule.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
 #include "Framework/Docking/TabManager.h"
 #include "Framework/Commands/UIAction.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -14,6 +16,8 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "SCrossingChunkPanel.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 #include "ToolMenus.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -237,7 +241,10 @@ void AddGroupedRuleSubmenus(FMenuBuilder& InMenu, const TArray<FCrossingChunkRul
 		const FCrossingChunkRule* Direct = FCrossingChunkRuleService::FindDirectRule(Rules, Folder);
 		FString Owner;
 		const FCrossingChunkRule* Inherited = FCrossingChunkRuleService::ResolveInheritedRule(Rules, Folder, Owner);
-		const int32 NextId = FCrossingChunkRuleService::NextChunkId(Rules);
+		// 新建号要避开「上一次打包兜底块用过的号」：那个号没写进规则，但已经随包发给玩家了，
+		// 复用它等于让同一个号在新包里装另一批内容（启动器会认成同一块）。
+		const int32 NextId = FCrossingChunkRuleService::NextChunkId(
+			Rules, FCrossingChunkRuleService::GetLastUnclassifiedChunkId() + 1);
 
 		// ---- 状态行：这块只读，但要说清楚「现在到底算哪个 chunk」 ----
 		FText Status;
@@ -404,7 +411,9 @@ void AddGroupedRuleSubmenus(FMenuBuilder& InMenu, const TArray<FCrossingChunkRul
 			return;
 		}
 
-		const int32 NextId = FCrossingChunkRuleService::NextChunkId(Rules);
+		// 同单目录那条：新号必须躲开已经发出去的兜底块号
+		const int32 NextId = FCrossingChunkRuleService::NextChunkId(
+			Rules, FCrossingChunkRuleService::GetLastUnclassifiedChunkId() + 1);
 
 		int32 DirectCount = 0;
 		for (const FString& Folder : Folders)
@@ -758,7 +767,72 @@ const FCrossingChunkRule* FCrossingChunkRuleService::ResolveInheritedRule(
 	return nullptr;
 }
 
-int32 FCrossingChunkRuleService::NextChunkId(const TArray<FCrossingChunkRule>& Rules)
+int32 FCrossingChunkRuleService::GetLastUnclassifiedChunkId()
+{
+	// 报告按「目标 × 配置 × 模式」分目录（Win64-Client / Win64-Client-Development / …-Quick），
+	// 每个目录一份 latest.json。这里全扫一遍：面板当前选的目标未必是最近打过包的那个。
+	const FString ReportsRoot = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("PackLogs/ChunkReports"));
+	if (!FPaths::DirectoryExists(ReportsRoot))
+	{
+		return INDEX_NONE;
+	}
+
+	int32 MaxId = INDEX_NONE;
+	IFileManager::Get().IterateDirectory(*ReportsRoot,
+		[&MaxId](const TCHAR* Entry, bool bIsDirectory) -> bool
+		{
+			if (!bIsDirectory)
+			{
+				return true;
+			}
+
+			FString Json;
+			if (!FFileHelper::LoadFileToString(Json, *FPaths::Combine(Entry, TEXT("latest.json"))))
+			{
+				return true;   // 这个目标还没打过包，跳过
+			}
+
+			TSharedPtr<FJsonObject> Root;
+			const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Json);
+			if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
+			{
+				return true;   // 坏报告不该挡住新建 chunk，跳过就行
+			}
+
+			const TArray<TSharedPtr<FJsonValue>>* Chunks = nullptr;
+			if (!Root->TryGetArrayField(TEXT("chunks"), Chunks) || Chunks == nullptr)
+			{
+				return true;
+			}
+
+			for (const TSharedPtr<FJsonValue>& Value : *Chunks)
+			{
+				const TSharedPtr<FJsonObject> Obj = Value.IsValid() ? Value->AsObject() : nullptr;
+				if (!Obj.IsValid())
+				{
+					continue;
+				}
+
+				FString Kind;
+				if (!Obj->TryGetStringField(TEXT("kind"), Kind)
+					|| !Kind.Equals(TEXT("unclassified"), ESearchCase::CaseSensitive))
+				{
+					continue;
+				}
+
+				double Id = 0.0;
+				if (Obj->TryGetNumberField(TEXT("id"), Id))
+				{
+					MaxId = FMath::Max(MaxId, static_cast<int32>(Id));
+				}
+			}
+			return true;
+		});
+
+	return MaxId;
+}
+
+int32 FCrossingChunkRuleService::NextChunkId(const TArray<FCrossingChunkRule>& Rules, int32 MinChunkId)
 {
 	int32 Next = 0;
 	for (const FCrossingChunkRule& Rule : Rules)
@@ -768,7 +842,7 @@ int32 FCrossingChunkRuleService::NextChunkId(const TArray<FCrossingChunkRule>& R
 			Next = Rule.ChunkId + 1;
 		}
 	}
-	return Next;
+	return FMath::Max(Next, MinChunkId);
 }
 
 FString FCrossingChunkRuleService::MakeRuleLine(const FCrossingChunkRule& Rule)
