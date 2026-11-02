@@ -18,7 +18,8 @@
       1. 规则按「书写顺序」生效，每个文件只采纳第一条匹配的规则
          → 所以本脚本把规则按「目录层级从深到浅」排序，
            天然实现「子目录优先、未分配走父目录」
-      2. 兜底规则放最后 → 所有没被任何 chunk 认领的 Content 文件归基础包
+      2. 收尾规则按顺序写在最后：shader/管线缓存/图标 → chunk 0；
+         本工程未分类内容 → 新 chunk（max+1）；其余引擎/插件内容 → chunk 0
 
 .PARAMETER RuleIni
     规则来源（默认 Config\DefaultCrossingChunk.ini）
@@ -197,10 +198,19 @@ $Assignments = $Assignments | Sort-Object `
 
 # 兜底规则的目标 chunk：按顺序自动排，不给参数调。
 #   未分类 = 规则里没登记过的目录 = 本次新增内容 → 单独成包（一次常规补丁的载体），
-#   而不是混进基础包（chunk 0）。号 = 现有最大 chunk 号 + 1。
+#   而不是混进基础包（chunk 0）。号 = 现有最大 chunk 号 + 1；
+#   还没有任何自定义 chunk 时这个号就是 0，未分类内容也跟着进基础包。
 $MaxChunkId = ($Chunks | Measure-Object -Property ChunkId -Maximum).Maximum
 if ($null -eq $MaxChunkId) { $MaxChunkId = -1 }
 $UnclassifiedChunkId = [int]$MaxChunkId + 1
+
+# 生成文件里那段说明：没有自定义 chunk 时兜底号就是 0，别再说"不是 chunk 0"。
+$NewContentWhy = if ($UnclassifiedChunkId -eq 0) {
+    '当前规则里还没有任何 chunk，兜底号就是 0 —— 未分类内容也进基础包。'
+}
+else {
+    '为什么不是 chunk 0：规则里没登记过的目录 = 这次新加的资源。把它们单独成包，启动器就只需要下一个新包，基础包一点不动。'
+}
 
 function ConvertTo-Mask {
     param([string]$GamePath)
@@ -288,8 +298,7 @@ if (-not $NoCatchAll) {
     $out.Add("; 兜底 A：本工程 Content 里「没有规则认领」的文件 = 本次新增内容")
     $out.Add(";        → pakchunk$UnclassifiedChunkId（一次常规补丁的载体）")
     $out.Add(';')
-    $out.Add('; 为什么不是 chunk 0：规则里没登记过的目录 = 这次新加的资源。')
-    $out.Add('; 把它们单独成包，启动器就只需要下一个新包，基础包一点不动。')
+    $out.Add("; $NewContentWhy")
     $out.Add('; 想让某批新资源自己成包，就在规则里给它标一个 chunk（右键文件夹即可）。')
     $out.Add('; （哪条规则网住了多少文件，看打包日志里的 `Pak rule ... with N matching files`）')
     $out.Add('; --------------------------------------------------------------------------')

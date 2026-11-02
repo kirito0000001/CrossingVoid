@@ -3,7 +3,7 @@
 	"Version": 1,
 	"VersionName": "0.1.0",
 	"FriendlyName": "CrossingChunkEditor",
-	"Description": "目录级 Chunk 标记：右键文件夹指定 / 移除 Chunk。",
+	"Description": "目录级 Chunk 标记与二游打包面板：右键指定/移除 Chunk，规则和打包脚本共用同一份 ini。",
 	"Category": "DreamPlugin",
 	"CreatedBy": "DreamMoon",
 	"CanContainContent": true,

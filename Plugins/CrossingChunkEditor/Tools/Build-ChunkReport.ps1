@@ -22,10 +22,11 @@
 param(
     # 留空 = 从脚本所在位置自动推（逐级向上找 *.uproject）
     [string]$ProjectRoot = '',
-    [string]$ArchiveDir  = 'D:\Build\CrossingVoid',
+    [string]$ArchiveDir  = 'F:\DaBaoV\Crossingvoid',
     [ValidateSet('Win64', 'Android')][string]$Platform = 'Win64',
     [ValidateSet('Client', 'Server')][string]$Target = 'Client',
     [ValidateSet('Quick', 'Base', 'Patch')][string]$Mode = 'Quick',
+    [ValidateSet('Shipping', 'Development')][string]$Configuration = 'Shipping',
     [string]$PackLogPath = '',
     [string]$UatLogDir = 'D:\UnrealEngine-5.8.2\Engine\Programs\AutomationTool\Saved\Logs',
     [string]$EngineRoot = 'D:\UnrealEngine-5.8.2',
@@ -60,8 +61,17 @@ $ProjectRoot = $ProjectRoot.TrimEnd('\', '/')
 
 $PlatformDir  = if ($Platform -eq 'Win64') { 'Windows' } else { 'Android' }
 $CookPlatform = $PlatformDir
-$SubName      = if ($Target -eq 'Server') { 'CrossingVoidServer' } else { 'CrossingVoid' }
-$ProjectName  = Split-Path -Leaf $ProjectRoot
+
+# 工程名从 .uproject 取（比用目录名可靠：目录可以随便改）。
+$ProjectCandidates = @(Get-ChildItem -LiteralPath $ProjectRoot -Filter '*.uproject' -File -ErrorAction SilentlyContinue)
+$ProjectFile = $ProjectCandidates |
+    Where-Object { $_.BaseName -ieq (Split-Path $ProjectRoot -Leaf) } |
+    Select-Object -First 1
+if (-not $ProjectFile) { $ProjectFile = $ProjectCandidates | Select-Object -First 1 }
+$ProjectName = if ($ProjectFile) { $ProjectFile.BaseName } else { Split-Path -Leaf $ProjectRoot }
+
+# 归档目录名 = 工程名（UAT 的 ShortProjectName）；服务器也是 <工程名>，不是 <工程名>Server。
+$SubName = $ProjectName
 
 $RuleFile     = Join-Path $ProjectRoot 'Config\DefaultPakFileRules.ini'
 
@@ -81,7 +91,10 @@ $PaksDir      = Join-Path $ArchiveDir "$PlatformDir\$SubName\Content\Paks"
 $AllChunksCsv = Join-Path $ProjectRoot "Saved\Cooked\$PlatformDir\$ProjectName\Metadata\AllChunksInfo.csv"
 # 《快速验证》单独放一份报告：它不打 pak，体积那几列必然是 0，
 # 混在一起会把正式报告（版本更新 / 常规补丁的体积、变化）冲掉。
-$ReportSuffix = if ($Mode -eq 'Quick') { '-Quick' } else { '' }
+# 《快速验证》/ Development 各单独放一份报告，避免互相覆盖。
+$ReportSuffix = ''
+if ($Configuration -ne 'Shipping') { $ReportSuffix += "-$Configuration" }
+if ($Mode -eq 'Quick') { $ReportSuffix += '-Quick' }
 $ReportDir    = Join-Path $ProjectRoot "Saved\PackLogs\ChunkReports\$Platform-$Target$ReportSuffix"
 $LatestPath   = Join-Path $ReportDir 'latest.json'
 
@@ -489,9 +502,10 @@ $SettingsSnapshot['AndroidIconDefaultCount'] = $IconDefault
 
 $Report = [ordered]@{
     schemaVersion  = 1
-    reportId       = "$Stamp-$Mode"
+    reportId       = "$Stamp-$Mode-$Configuration"
     generatedAt    = (Get-Date -Format 'yyyy-MM-ddTHH:mm:sszzz')
     mode           = $Mode
+    configuration  = $Configuration
     platform       = $Platform
     target         = $Target
     project        = $ProjectName
